@@ -25,6 +25,8 @@ def gh_get(url, token):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
+        # ADR-8: a non-200 must be loud, not collapsed into "no data".
+        print(f"github api error: {e.code} {url}", flush=True)
         return e.code, None
 
 
@@ -41,7 +43,11 @@ def list_owner_repos(username, token):
         if len(data) < 100:
             break
         page += 1
-    return [r for r in repos if r["owner"]["login"].lower() == username.lower()]
+    owned = [r for r in repos if r["owner"]["login"].lower() == username.lower()]
+    # ADR-8: log the count every cycle, including zero, so a misconfigured
+    # token/username is visibly distinguishable from "nothing to do".
+    print(f"{len(owned)} repos", flush=True)
+    return owned
 
 
 def has_dockerfile(owner, repo, branch, token):
@@ -66,22 +72,49 @@ def image_name(repo_full_name, username):
     return repo_full_name
 
 
-def build_and_push(clone_url, branch, token, registry, image, sha):
+def state_entry(state, name):
+    """Read one repo's state, tolerating the v1 bare-string shape (ADR-7)."""
+    v = state.get(name)
+    if v is None:
+        return None, None
+    if isinstance(v, str):
+        return v, None
+    return v.get("sha"), v.get("pushed_at")
+
+
+def build_and_push(clone_url, branch, token, registry, image, timeout):
+    """Clone, strip .git (ADR-4), build and push. Returns the SHA actually
+    checked out (git rev-parse HEAD), which is what gets tagged and stored
+    (FR-9) - never the pre-clone SHA from the API."""
     tmpdir = tempfile.mkdtemp()
     try:
         auth_url = clone_url.replace("https://", f"https://x-access-token:{token}@")
         subprocess.run(
             ["git", "clone", "--depth", "1", "--branch", branch, auth_url, tmpdir],
             check=True,
+            timeout=timeout,
         )
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmpdir,
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        # NFR-1: .git/config holds the tokenized clone URL; it must never be
+        # part of the build context.
+        shutil.rmtree(os.path.join(tmpdir, ".git"), ignore_errors=True)
+
         tags = [f"{registry}/{image}:latest", f"{registry}/{image}:{sha[:7]}"]
         build_cmd = ["docker", "build"]
         for tag in tags:
             build_cmd += ["-t", tag]
         build_cmd.append(tmpdir)
-        subprocess.run(build_cmd, check=True)
+        subprocess.run(build_cmd, check=True, timeout=timeout)
         for tag in tags:
-            subprocess.run(["docker", "push", tag], check=True)
+            subprocess.run(["docker", "push", tag], check=True, timeout=timeout)
+        return sha
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -94,28 +127,56 @@ def load_state(path):
 
 
 def save_state(path, state):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(state, f)
+    """Atomic write (NFR-7): temp file in the same directory, then os.replace."""
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=d)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp_path, path)
+    except Exception:
+        os.unlink(tmp_path)
+        raise
 
 
-def run_once(username, token, branch, registry, state_path):
+def run_once(username, token, branch, registry, state_path, build_timeout=1800):
     state = load_state(state_path)
     for repo in list_owner_repos(username, token):
         name = repo["name"]
         try:
+            old_sha, old_pushed_at = state_entry(state, name)
+            pushed_at = repo.get("pushed_at")
+            # ADR-7: skip the per-repo Dockerfile/commit lookups entirely
+            # when nothing has moved since last cycle.
+            if pushed_at and pushed_at == old_pushed_at:
+                continue
             if not has_dockerfile(username, name, branch, token):
                 continue
             sha = get_latest_commit_sha(username, name, branch, token)
-            if not sha or state.get(name) == sha:
+            if not sha or sha == old_sha:
                 continue
             image = image_name(repo["full_name"], username)
             print(f"building {name} @ {sha[:7]} -> {registry}/{image}", flush=True)
-            build_and_push(repo["clone_url"], branch, token, registry, image, sha)
-            state[name] = sha
-            save_state(state_path, state)
+            built_sha = build_and_push(
+                repo["clone_url"], branch, token, registry, image, build_timeout
+            )
+            state[name] = {"sha": built_sha, "pushed_at": pushed_at}
+            save_state(state_path, state)  # FR-10: only after a successful push
         except subprocess.CalledProcessError as e:
-            print(f"build failed for {name}: {e}", flush=True)
+            # ADR-5/NFR-2: never render argv (it contains the tokenized clone
+            # URL) - log repo name and returncode only.
+            # alerts/build-failed.yaml matches on the "build failed" prefix.
+            print(f"build failed for {name}: exit {e.returncode}", flush=True)
+        except subprocess.TimeoutExpired:
+            # NFR-6: a hung build is a failed build and must alert too.
+            # alerts/build-failed.yaml matches on the "build failed" prefix.
+            print(f"build failed for {name}: exit timeout", flush=True)
+        except Exception as e:
+            # ADR-6: broadened from CalledProcessError-only so one repo's
+            # failure (e.g. a URLError from a flaky API call) can't end the
+            # cycle. alerts/build-failed.yaml matches on the "build failed" prefix.
+            print(f"build failed for {name}: {type(e).__name__}", flush=True)
 
 
 def main():
@@ -125,12 +186,13 @@ def main():
     registry = os.environ.get("REGISTRY_URL", "registry.localdomain:5000")
     state_path = os.environ.get("STATE_FILE", "/data/state.json")
     interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
+    build_timeout = int(os.environ.get("BUILD_TIMEOUT_SECONDS", "1800"))
 
     while True:
         try:
-            run_once(username, token, branch, registry, state_path)
+            run_once(username, token, branch, registry, state_path, build_timeout)
         except Exception as e:
-            print(f"poll cycle failed: {e}", flush=True)
+            print(f"poll cycle failed: {type(e).__name__}", flush=True)
         time.sleep(interval)
 
 
