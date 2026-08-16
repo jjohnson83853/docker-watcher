@@ -283,6 +283,72 @@ def test_run_once_timeout_expired_also_reports_build_failed():
     assert any(m.startswith("build failed") for m in messages), messages
 
 
+def test_has_dockerfile_404_is_not_logged():
+    # Bug fix: a 404 from the contents endpoint just means "no Dockerfile",
+    # which is the normal outcome for most owned repos - ADR-8's "log every
+    # non-200" must not apply here, or the logs drown in routine noise.
+    messages = []
+    orig_print = app.print
+
+    def fake_urlopen(req, timeout=30):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    orig_urlopen = app.urllib.request.urlopen
+    app.urllib.request.urlopen = fake_urlopen
+    app.print = lambda *a, **k: messages.append(" ".join(str(x) for x in a))
+    try:
+        result = app.has_dockerfile("jjohnson83853", "AbstractDAO", "main", "tok")
+    finally:
+        app.urllib.request.urlopen = orig_urlopen
+        app.print = orig_print
+
+    assert result is False
+    assert messages == []
+
+
+def test_has_dockerfile_500_is_still_logged():
+    # A genuinely abnormal status at the same call site must still be loud.
+    messages = []
+    orig_print = app.print
+
+    def fake_urlopen(req, timeout=30):
+        raise urllib.error.HTTPError(req.full_url, 500, "Server Error", {}, None)
+
+    orig_urlopen = app.urllib.request.urlopen
+    app.urllib.request.urlopen = fake_urlopen
+    app.print = lambda *a, **k: messages.append(" ".join(str(x) for x in a))
+    try:
+        result = app.has_dockerfile("jjohnson83853", "AbstractDAO", "main", "tok")
+    finally:
+        app.urllib.request.urlopen = orig_urlopen
+        app.print = orig_print
+
+    assert result is False
+    assert any("500" in m for m in messages), messages
+
+
+def test_gh_get_other_call_sites_still_log_404():
+    # ADR-8 regression guard: a plain gh_get call (e.g. repo listing, commit
+    # lookup) with no quiet_statuses must keep logging any non-200 as before.
+    messages = []
+    orig_print = app.print
+
+    def fake_urlopen(req, timeout=30):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    orig_urlopen = app.urllib.request.urlopen
+    app.urllib.request.urlopen = fake_urlopen
+    app.print = lambda *a, **k: messages.append(" ".join(str(x) for x in a))
+    try:
+        status, data = app.gh_get(f"{app.GITHUB_API}/user/repos", "tok")
+    finally:
+        app.urllib.request.urlopen = orig_urlopen
+        app.print = orig_print
+
+    assert status == 404 and data is None
+    assert any("404" in m for m in messages), messages
+
+
 if __name__ == "__main__":
     test_image_name()
     test_state_entry_v1_bare_string()
@@ -295,4 +361,7 @@ if __name__ == "__main__":
     test_build_and_push_uses_rev_parse_sha_not_precall_sha()
     test_run_once_build_failure_message_starts_with_build_failed()
     test_run_once_timeout_expired_also_reports_build_failed()
+    test_has_dockerfile_404_is_not_logged()
+    test_has_dockerfile_500_is_still_logged()
+    test_gh_get_other_call_sites_still_log_404()
     print("ok")

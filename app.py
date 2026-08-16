@@ -12,7 +12,7 @@ import urllib.request
 GITHUB_API = "https://api.github.com"
 
 
-def gh_get(url, token):
+def gh_get(url, token, quiet_statuses=()):
     req = urllib.request.Request(
         url,
         headers={
@@ -25,8 +25,12 @@ def gh_get(url, token):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        # ADR-8: a non-200 must be loud, not collapsed into "no data".
-        print(f"github api error: {e.code} {url}", flush=True)
+        # ADR-8: a non-200 must be loud, not collapsed into "no data" -
+        # except statuses the caller says are an expected, routine outcome
+        # (e.g. a 404 from the Dockerfile-contents check just means "no
+        # Dockerfile"). Anything else (401/403/5xx/etc.) still logs here.
+        if e.code not in quiet_statuses:
+            print(f"github api error: {e.code} {url}", flush=True)
         return e.code, None
 
 
@@ -51,8 +55,12 @@ def list_owner_repos(username, token):
 
 
 def has_dockerfile(owner, repo, branch, token):
+    # A 404 here just means "this repo has no Dockerfile" - routine control
+    # flow for most owned repos, not the kind of anomaly ADR-8 wants logged.
     status, _ = gh_get(
-        f"{GITHUB_API}/repos/{owner}/{repo}/contents/Dockerfile?ref={branch}", token
+        f"{GITHUB_API}/repos/{owner}/{repo}/contents/Dockerfile?ref={branch}",
+        token,
+        quiet_statuses=(404,),
     )
     return status == 200
 
