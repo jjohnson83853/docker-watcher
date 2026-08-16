@@ -1,0 +1,11 @@
+services:
+  docker-watcher:
+    image: registry.localdomain:5000/docker-watcher:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - watcher-state:/data
+
+volumes:
+  watcher-state:

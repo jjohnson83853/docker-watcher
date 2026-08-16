@@ -1,0 +1,16 @@
+name: Build and push
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push
+        run: |
+          docker build -t registry.localdomain:5000/docker-watcher:latest -t registry.localdomain:5000/docker-watcher:${{ github.sha }} .
+          docker push registry.localdomain:5000/docker-watcher:latest
+          docker push registry.localdomain:5000/docker-watcher:${{ github.sha }}
