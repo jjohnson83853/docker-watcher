@@ -1,0 +1,69 @@
+# Grafana file-provisioned alert rule (ADR-11, FR-14/15/16).
+#
+# Selector confirmed against Loki (192.168.50.72:3100) on 2026-08-16 using
+# already-running containers on the same host/pipeline (local-registry-mirror,
+# go2rtc) - the docker-watcher stream itself doesn't exist yet pending D-4/U-2.
+# Confirmed schema: job="vector-logs", host="192.168.50.61",
+# source_system="docker_proxmox", source_subsystem="<container-name>" - matches
+# design.md EF-11 exactly (D-9). Re-check the actual docker-watcher stream
+# once it's deployed (D-12) before relying on this rule.
+#
+# Deliberately declares NO contactPoints and NO notification policy - this
+# rule must fall through to Grafana's default notification policy (ADR-11).
+# Choosing a channel is the user's call, not this repo's.
+#
+# Not applied automatically - Grafana's alerting API requires auth this repo
+# does not hold (design.md C-7). Apply by hand or via file provisioning with
+# your own credentials (D-11), then trigger a real failed build and confirm
+# a notification actually arrives before trusting this.
+#
+# Replace <LOKI_DATASOURCE_UID> below with the Loki datasource's UID from
+# Grafana > Connections > Data sources > Loki (visible once logged in;
+# unreachable anonymously - design.md EF-12).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: docker-watcher-alerts
+    folder: docker-watcher
+    interval: 5m
+    rules:
+      - uid: docker-watcher-build-failed
+        title: docker-watcher build failed
+        condition: C
+        for: 0m
+        noDataState: NoData
+        execErrState: Error
+        labels: {}
+        annotations:
+          summary: >-
+            docker-watcher logged a "build failed" line in the last 10m.
+            Query: {job="vector-logs", host="192.168.50.61",
+            source_subsystem="docker-watcher"} |= "build failed"
+        data:
+          - refId: A
+            datasourceUid: <LOKI_DATASOURCE_UID>
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              queryType: range
+              expr: >-
+                sum(count_over_time(
+                  {job="vector-logs", host="192.168.50.61", source_subsystem="docker-watcher"}
+                  |= "build failed" [10m]
+                ))
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0

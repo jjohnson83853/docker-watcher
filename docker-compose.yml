@@ -1,10 +1,30 @@
 services:
   docker-watcher:
     image: registry.localdomain:5000/docker-watcher:latest
+    # Load-bearing: the Loki alert selector in alerts/build-failed.yaml
+    # matches source_subsystem="docker-watcher", which vector-agent derives
+    # from the container name. A generated/prefixed name breaks alerting
+    # silently (design.md D-3).
+    container_name: docker-watcher
     restart: unless-stopped
     env_file: .env
     volumes:
       - watcher-state:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+    labels:
+      # ADR-9: the watcher builds itself; letting Watchtower redeploy it
+      # mid-build-cycle is a self-referential race. Upgrades are a manual
+      # `docker compose pull && up -d`. All other services keep Watchtower.
+      - "com.centurylinklabs.watchtower.enable=false"
 
 volumes:
   watcher-state:
