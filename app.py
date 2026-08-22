@@ -118,6 +118,10 @@ def build_and_push(clone_url, branch, token, registry, image, timeout):
         build_cmd = ["docker", "build"]
         for tag in tags:
             build_cmd += ["-t", tag]
+        # Pass token as a build-arg so Dockerfiles can consume it via ARG in
+        # an intermediate stage (multi-stage keeps it out of the final image).
+        # --mount=type=secret requires BuildKit, which is disabled (ADR-2).
+        build_cmd += ["--build-arg", f"GITHUB_TOKEN={token}"]
         build_cmd.append(tmpdir)
         subprocess.run(build_cmd, check=True, timeout=timeout)
         for tag in tags:
