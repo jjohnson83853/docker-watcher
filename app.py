@@ -12,6 +12,10 @@ import urllib.request
 GITHUB_API = "https://api.github.com"
 
 
+def log(level, event, **fields):
+    print(json.dumps({"level": level, "event": event, **fields}), flush=True)
+
+
 def gh_get(url, token, quiet_statuses=()):
     req = urllib.request.Request(
         url,
@@ -30,7 +34,7 @@ def gh_get(url, token, quiet_statuses=()):
         # (e.g. a 404 from the Dockerfile-contents check just means "no
         # Dockerfile"). Anything else (401/403/5xx/etc.) still logs here.
         if e.code not in quiet_statuses:
-            print(f"github api error: {e.code} {url}", flush=True)
+            log("error", "github_api_error", status=e.code, url=url)
         return e.code, None
 
 
@@ -50,7 +54,7 @@ def list_owner_repos(username, token):
     owned = [r for r in repos if r["owner"]["login"].lower() == username.lower()]
     # ADR-8: log the count every cycle, including zero, so a misconfigured
     # token/username is visibly distinguishable from "nothing to do".
-    print(f"{len(owned)} repos", flush=True)
+    log("info", "repos_found", count=len(owned))
     return owned
 
 
@@ -165,26 +169,27 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
             if not sha or sha == old_sha:
                 continue
             image = image_name(repo["full_name"], username)
-            print(f"building {name} @ {sha[:7]} -> {registry}/{image}", flush=True)
+            log("info", "build_started", repo=repo["full_name"], sha=sha[:7], image=f"{registry}/{image}")
             built_sha = build_and_push(
                 repo["clone_url"], branch, token, registry, image, build_timeout
             )
             state[name] = {"sha": built_sha, "pushed_at": pushed_at}
             save_state(state_path, state)  # FR-10: only after a successful push
+            log("info", "build_success", repo=repo["full_name"], sha=built_sha[:7], image=f"{registry}/{image}")
         except subprocess.CalledProcessError as e:
             # ADR-5/NFR-2: never render argv (it contains the tokenized clone
             # URL) - log repo name and returncode only.
             # alerts/build-failed.yaml matches on the "build failed" prefix.
-            print(f"build failed for {name}: exit {e.returncode}", flush=True)
+            log("error", "build failed", repo=repo["full_name"], exit_code=e.returncode)
         except subprocess.TimeoutExpired:
             # NFR-6: a hung build is a failed build and must alert too.
             # alerts/build-failed.yaml matches on the "build failed" prefix.
-            print(f"build failed for {name}: exit timeout", flush=True)
+            log("error", "build failed", repo=repo["full_name"], exit_code="timeout")
         except Exception as e:
             # ADR-6: broadened from CalledProcessError-only so one repo's
             # failure (e.g. a URLError from a flaky API call) can't end the
             # cycle. alerts/build-failed.yaml matches on the "build failed" prefix.
-            print(f"build failed for {name}: {type(e).__name__}", flush=True)
+            log("error", "build failed", repo=repo["full_name"], error_type=type(e).__name__)
 
 
 def main():
@@ -200,7 +205,7 @@ def main():
         try:
             run_once(username, token, branch, registry, state_path, build_timeout)
         except Exception as e:
-            print(f"poll cycle failed: {type(e).__name__}", flush=True)
+            log("error", "poll_cycle_failed", error_type=type(e).__name__)
         time.sleep(interval)
 
 
