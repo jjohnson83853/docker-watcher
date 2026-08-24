@@ -160,6 +160,13 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
     state = load_state(state_path)
     for repo in list_owner_repos(username, token):
         name = repo["name"]
+        # EF-16: owned repos don't agree on a default branch - docker-watcher,
+        # send-loki, subtitles and amazon_price_scanner default to master, the
+        # rest to main. A single global BRANCH silently skips whichever half it
+        # doesn't name, including this repo itself (FR-13 self-build). Unset
+        # BRANCH (the default) follows each repo's own default branch; setting
+        # it still forces one branch everywhere.
+        repo_branch = branch or repo.get("default_branch") or "main"
         try:
             old_sha, old_pushed_at = state_entry(state, name)
             pushed_at = repo.get("pushed_at")
@@ -167,39 +174,46 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
             # when nothing has moved since last cycle.
             if pushed_at and pushed_at == old_pushed_at:
                 continue
-            if not has_dockerfile(username, name, branch, token):
+            if not has_dockerfile(username, name, repo_branch, token):
                 continue
-            sha = get_latest_commit_sha(username, name, branch, token)
+            sha = get_latest_commit_sha(username, name, repo_branch, token)
             if not sha or sha == old_sha:
                 continue
             image = image_name(repo["full_name"], username)
-            log("info", "build_started", repo=repo["full_name"], sha=sha[:7], image=f"{registry}/{image}")
+            log("info", "build_started", repo=repo["full_name"], branch=repo_branch,
+                sha=sha[:7], image=f"{registry}/{image}")
             built_sha = build_and_push(
-                repo["clone_url"], branch, token, registry, image, build_timeout
+                repo["clone_url"], repo_branch, token, registry, image, build_timeout
             )
             state[name] = {"sha": built_sha, "pushed_at": pushed_at}
             save_state(state_path, state)  # FR-10: only after a successful push
-            log("info", "build_success", repo=repo["full_name"], sha=built_sha[:7], image=f"{registry}/{image}")
+            log("info", "build_success", repo=repo["full_name"], branch=repo_branch,
+                sha=built_sha[:7], image=f"{registry}/{image}")
         except subprocess.CalledProcessError as e:
             # ADR-5/NFR-2: never render argv (it contains the tokenized clone
             # URL) - log repo name and returncode only.
             # alerts/build-failed.yaml matches on the "build failed" prefix.
-            log("error", "build failed", repo=repo["full_name"], exit_code=e.returncode)
+            log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
+                exit_code=e.returncode)
         except subprocess.TimeoutExpired:
             # NFR-6: a hung build is a failed build and must alert too.
             # alerts/build-failed.yaml matches on the "build failed" prefix.
-            log("error", "build failed", repo=repo["full_name"], exit_code="timeout")
+            log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
+                exit_code="timeout")
         except Exception as e:
             # ADR-6: broadened from CalledProcessError-only so one repo's
             # failure (e.g. a URLError from a flaky API call) can't end the
             # cycle. alerts/build-failed.yaml matches on the "build failed" prefix.
-            log("error", "build failed", repo=repo["full_name"], error_type=type(e).__name__)
+            log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
+                error_type=type(e).__name__)
 
 
 def main():
     username = os.environ["GITHUB_USERNAME"]
     token = os.environ["GITHUB_TOKEN"]
-    branch = os.environ.get("BRANCH", "main")
+    # Empty/unset means "each repo's own default branch" (EF-16) - a set value
+    # is an override that forces the same branch for every repo.
+    branch = os.environ.get("BRANCH") or None
     registry = os.environ.get("REGISTRY_URL", "registry.localdomain:5000")
     state_path = os.environ.get("STATE_FILE", "/data/state.json")
     interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))

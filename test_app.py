@@ -152,6 +152,41 @@ def test_run_once_changed_pushed_at_proceeds_to_checks():
     assert reached == {"dockerfile": True, "commit": True}
 
 
+def test_run_once_branch_follows_repo_default_unless_overridden():
+    # EF-16/FR-13: owned repos disagree on their default branch. With no BRANCH
+    # override each repo must be checked on its own default_branch, or every
+    # master-default repo - docker-watcher included - is silently never built.
+    repos = [
+        {"name": "on-master", "full_name": "jjohnson83853/on-master",
+         "pushed_at": "t1", "default_branch": "master",
+         "clone_url": "https://github.com/jjohnson83853/on-master.git"},
+        {"name": "on-main", "full_name": "jjohnson83853/on-main",
+         "pushed_at": "t2", "default_branch": "main",
+         "clone_url": "https://github.com/jjohnson83853/on-main.git"},
+    ]
+    seen = []
+
+    def fake_has_dockerfile(owner, repo, branch, token):
+        seen.append((repo, branch))
+        return False  # stop before any build; we only care which branch was used
+
+    orig_list, orig_has = app.list_owner_repos, app.has_dockerfile
+    app.list_owner_repos = lambda u, t: repos
+    app.has_dockerfile = fake_has_dockerfile
+    try:
+        app.run_once("jjohnson83853", "tok", None, "registry.local:5000",
+                     os.path.join(tempfile.mkdtemp(), "state.json"))
+        assert seen == [("on-master", "master"), ("on-main", "main")], seen
+
+        seen.clear()
+        app.run_once("jjohnson83853", "tok", "release", "registry.local:5000",
+                     os.path.join(tempfile.mkdtemp(), "state.json"))
+        assert seen == [("on-master", "release"), ("on-main", "release")], seen
+    finally:
+        app.list_owner_repos = orig_list
+        app.has_dockerfile = orig_has
+
+
 class _FakeCompletedProcess:
     def __init__(self, stdout=""):
         self.stdout = stdout
@@ -381,6 +416,7 @@ if __name__ == "__main__":
     test_run_once_one_repo_url_error_does_not_abort_cycle()
     test_run_once_unchanged_pushed_at_skips_api_calls()
     test_run_once_changed_pushed_at_proceeds_to_checks()
+    test_run_once_branch_follows_repo_default_unless_overridden()
     test_build_and_push_uses_rev_parse_sha_not_precall_sha()
     test_run_once_build_failure_logs_build_failed_event()
     test_run_once_timeout_expired_also_reports_build_failed()
