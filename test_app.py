@@ -191,9 +191,27 @@ def test_build_and_push_uses_rev_parse_sha_not_precall_sha():
     assert "sekret-token" not in " ".join(build_cmd)
 
 
-def test_run_once_build_failure_message_starts_with_build_failed():
+def _build_failed_lines(messages):
+    """Raw log lines alerts/build-failed.yaml would fire on.
+
+    Loki's `|= "build failed"` is a substring match over the whole line, so
+    since logs went JSON both things must hold: the literal substring is
+    still present in the serialized line, and it is there because `event`
+    is "build failed" at error level - not by accident in some other field.
+    """
+    lines = []
+    for m in messages:
+        rec = json.loads(m)
+        if rec.get("event") == "build failed":
+            assert rec["level"] == "error", rec
+            assert "build failed" in m, m  # the literal Loki filter matches
+            lines.append(m)
+    return lines
+
+
+def test_run_once_build_failure_logs_build_failed_event():
     # E-4/E-9/FR-15: this is the literal interface contract alerts/build-failed.yaml
-    # matches on. Renaming this prefix must fail this test.
+    # matches on. Renaming this event must fail this test.
     state_path = os.path.join(tempfile.mkdtemp(), "state.json")
 
     def fake_list_owner_repos(username, token):
@@ -233,8 +251,11 @@ def test_run_once_build_failure_message_starts_with_build_failed():
         app.build_and_push = orig_build
         app.print = orig_print
 
-    failure_lines = [m for m in messages if m.startswith("build failed")]
+    failure_lines = _build_failed_lines(messages)
     assert len(failure_lines) == 1, messages
+    assert json.loads(failure_lines[0])["exit_code"] == 1, failure_lines
+    # NFR-2: the tokenized clone URL is in the CalledProcessError argv and
+    # must not reach the log line.
     assert "sekret" not in failure_lines[0]
 
 
@@ -280,7 +301,9 @@ def test_run_once_timeout_expired_also_reports_build_failed():
         app.build_and_push = orig_build
         app.print = orig_print
 
-    assert any(m.startswith("build failed") for m in messages), messages
+    failure_lines = _build_failed_lines(messages)
+    assert len(failure_lines) == 1, messages
+    assert json.loads(failure_lines[0])["exit_code"] == "timeout", failure_lines
 
 
 def test_has_dockerfile_404_is_not_logged():
@@ -359,7 +382,7 @@ if __name__ == "__main__":
     test_run_once_unchanged_pushed_at_skips_api_calls()
     test_run_once_changed_pushed_at_proceeds_to_checks()
     test_build_and_push_uses_rev_parse_sha_not_precall_sha()
-    test_run_once_build_failure_message_starts_with_build_failed()
+    test_run_once_build_failure_logs_build_failed_event()
     test_run_once_timeout_expired_also_reports_build_failed()
     test_has_dockerfile_404_is_not_logged()
     test_has_dockerfile_500_is_still_logged()
