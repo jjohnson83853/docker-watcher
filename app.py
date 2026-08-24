@@ -1,5 +1,5 @@
-"""Polls a GitHub account's repos, builds any with a Dockerfile on new main-branch
-commits, and pushes the image to the configured registry."""
+"""Polls a GitHub account's repos, builds any with a Dockerfile on new commits to
+each repo's default branch, and pushes the image to the configured registry."""
 import json
 import os
 import shutil
@@ -160,12 +160,11 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
     state = load_state(state_path)
     for repo in list_owner_repos(username, token):
         name = repo["name"]
-        # EF-16: owned repos don't agree on a default branch - docker-watcher,
-        # send-loki, subtitles and amazon_price_scanner default to master, the
-        # rest to main. A single global BRANCH silently skips whichever half it
-        # doesn't name, including this repo itself (FR-13 self-build). Unset
-        # BRANCH (the default) follows each repo's own default branch; setting
-        # it still forces one branch everywhere.
+        # EF-16: owned repos don't agree on a default branch (some master, some
+        # main). A single global BRANCH silently skips every repo it doesn't
+        # name, including this repo itself (FR-13 self-build). Unset BRANCH (the
+        # default) follows each repo's own actual default branch, whatever that
+        # is; setting it still forces one branch everywhere.
         repo_branch = branch or repo.get("default_branch") or "main"
         try:
             old_sha, old_pushed_at = state_entry(state, name)
@@ -192,18 +191,18 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
         except subprocess.CalledProcessError as e:
             # ADR-5/NFR-2: never render argv (it contains the tokenized clone
             # URL) - log repo name and returncode only.
-            # alerts/build-failed.yaml matches on the "build failed" prefix.
+            # alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 exit_code=e.returncode)
         except subprocess.TimeoutExpired:
             # NFR-6: a hung build is a failed build and must alert too.
-            # alerts/build-failed.yaml matches on the "build failed" prefix.
+            # alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 exit_code="timeout")
         except Exception as e:
             # ADR-6: broadened from CalledProcessError-only so one repo's
             # failure (e.g. a URLError from a flaky API call) can't end the
-            # cycle. alerts/build-failed.yaml matches on the "build failed" prefix.
+            # cycle. alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 error_type=type(e).__name__)
 

@@ -164,27 +164,56 @@ def test_run_once_branch_follows_repo_default_unless_overridden():
          "pushed_at": "t2", "default_branch": "main",
          "clone_url": "https://github.com/jjohnson83853/on-main.git"},
     ]
+    # All three per-repo call sites must agree: the Dockerfile lookup, the
+    # commit lookup, and the clone/build. A wrong branch at the latter two
+    # means cloning and shipping the wrong code, so the test runs through to
+    # build_and_push instead of stopping at the Dockerfile check.
     seen = []
 
     def fake_has_dockerfile(owner, repo, branch, token):
-        seen.append((repo, branch))
-        return False  # stop before any build; we only care which branch was used
+        seen.append(("has_dockerfile", repo, branch))
+        return True
 
-    orig_list, orig_has = app.list_owner_repos, app.has_dockerfile
+    def fake_get_latest_commit_sha(owner, repo, branch, token):
+        seen.append(("get_latest_commit_sha", repo, branch))
+        return "a" * 40
+
+    def fake_build_and_push(clone_url, branch, token, registry, image, timeout):
+        seen.append(("build_and_push", image, branch))
+        return "b" * 40
+
+    orig = (app.list_owner_repos, app.has_dockerfile,
+            app.get_latest_commit_sha, app.build_and_push)
     app.list_owner_repos = lambda u, t: repos
     app.has_dockerfile = fake_has_dockerfile
+    app.get_latest_commit_sha = fake_get_latest_commit_sha
+    app.build_and_push = fake_build_and_push
     try:
         app.run_once("jjohnson83853", "tok", None, "registry.local:5000",
                      os.path.join(tempfile.mkdtemp(), "state.json"))
-        assert seen == [("on-master", "master"), ("on-main", "main")], seen
+        assert seen == [
+            ("has_dockerfile", "on-master", "master"),
+            ("get_latest_commit_sha", "on-master", "master"),
+            ("build_and_push", "on-master", "master"),
+            ("has_dockerfile", "on-main", "main"),
+            ("get_latest_commit_sha", "on-main", "main"),
+            ("build_and_push", "on-main", "main"),
+        ], seen
 
         seen.clear()
         app.run_once("jjohnson83853", "tok", "release", "registry.local:5000",
                      os.path.join(tempfile.mkdtemp(), "state.json"))
-        assert seen == [("on-master", "release"), ("on-main", "release")], seen
+        assert seen == [
+            ("has_dockerfile", "on-master", "release"),
+            ("get_latest_commit_sha", "on-master", "release"),
+            ("build_and_push", "on-master", "release"),
+            ("has_dockerfile", "on-main", "release"),
+            ("get_latest_commit_sha", "on-main", "release"),
+            ("build_and_push", "on-main", "release"),
+        ], seen
     finally:
-        app.list_owner_repos = orig_list
-        app.has_dockerfile = orig_has
+        (app.list_owner_repos, app.has_dockerfile,
+         app.get_latest_commit_sha, app.build_and_push) = orig
 
 
 class _FakeCompletedProcess:
