@@ -122,10 +122,21 @@ def build_and_push(clone_url, branch, token, registry, image, timeout):
         build_cmd = ["docker", "build"]
         for tag in tags:
             build_cmd += ["-t", tag]
-        # Pass token as a build-arg so Dockerfiles can consume it via ARG in
-        # an intermediate stage (multi-stage keeps it out of the final image).
-        # --mount=type=secret requires BuildKit, which is disabled (ADR-2).
-        build_cmd += ["--build-arg", f"GITHUB_TOKEN={token}"]
+        # NFR-1: the token must never reach the build. --build-arg is not a
+        # secret channel - with the classic builder (DOCKER_BUILDKIT=0, ADR-2)
+        # its value is recorded in image layer history on the daemon for any
+        # stage where the ARG is in scope, and the registry is anonymously
+        # readable, so a Dockerfile that consumes it in its *final* stage
+        # would leak the PAT straight to a pullable image. The secure
+        # alternative (--secret id=...,env=...) needs BuildKit, which this
+        # deployment cannot run (no buildx plugin, socket-proxy GRPC=0).
+        # reolink-mcp's Dockerfile does declare `ARG GITHUB_TOKEN`, but only
+        # in a discarded intermediate stage, so it never reached a pushed
+        # image - it was still exposed in build argv and in that
+        # intermediate image's layer history on docker-lxc while this line
+        # was live. If a repo ever needs a build-time credential, that is a
+        # design change (a working BuildKit path first), not another
+        # --build-arg.
         build_cmd.append(tmpdir)
         subprocess.run(build_cmd, check=True, timeout=timeout)
         for tag in tags:
