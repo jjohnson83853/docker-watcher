@@ -370,6 +370,91 @@ def test_run_once_timeout_expired_also_reports_build_failed():
     assert json.loads(failure_lines[0])["exit_code"] == "timeout", failure_lines
 
 
+def test_build_and_push_docker_build_failure_raises_build_error_with_output():
+    # Previously a failed `docker build` surfaced as a bare CalledProcessError
+    # with no output attached, so the eventual log line carried nothing but
+    # an exit code - undiagnosable without shelling into the container.
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["docker", "build"]:
+            raise subprocess.CalledProcessError(
+                1, cmd, output="Step 3/5 : COPY extraction.py .\n",
+                stderr="COPY failed: file not found in build context\n",
+            )
+        return _FakeCompletedProcess()
+
+    orig_run = app.subprocess.run
+    orig_mkdtemp = app.tempfile.mkdtemp
+    orig_rmtree = app.shutil.rmtree
+    app.subprocess.run = fake_run
+    app.tempfile.mkdtemp = lambda: "/fake/tmp/dir"
+    app.shutil.rmtree = lambda *a, **k: None
+    try:
+        try:
+            app.build_and_push(
+                "https://github.com/jjohnson83853/repo-a.git", "main", "sekret-token",
+                "registry.local:5000", "repo-a", timeout=30,
+            )
+            assert False, "expected BuildError"
+        except app.BuildError as e:
+            assert e.returncode == 1
+            assert "COPY failed" in e.output
+            assert "Step 3/5" in e.output
+    finally:
+        app.subprocess.run = orig_run
+        app.tempfile.mkdtemp = orig_mkdtemp
+        app.shutil.rmtree = orig_rmtree
+
+
+def test_run_once_docker_build_failure_logs_output_tail():
+    # The other half: run_once must surface BuildError's captured output in
+    # the structured "build failed" line, not just exit_code.
+    state_path = os.path.join(tempfile.mkdtemp(), "state.json")
+
+    def fake_list_owner_repos(username, token):
+        return [{"name": "repo-a", "full_name": "jjohnson83853/repo-a",
+                  "pushed_at": "t1",
+                  "clone_url": "https://github.com/jjohnson83853/repo-a.git"}]
+
+    def fake_has_dockerfile(owner, repo, branch, token):
+        return True
+
+    def fake_get_latest_commit_sha(owner, repo, branch, token):
+        return "abc1234"
+
+    def fake_build_and_push(*a, **k):
+        raise app.BuildError(1, "COPY failed: file not found in build context\n")
+
+    messages = []
+
+    def fake_print(*args, **kwargs):
+        messages.append(" ".join(str(a) for a in args))
+
+    orig_print = print
+    orig_list, orig_has, orig_sha, orig_build = (
+        app.list_owner_repos, app.has_dockerfile, app.get_latest_commit_sha,
+        app.build_and_push
+    )
+    app.list_owner_repos = fake_list_owner_repos
+    app.has_dockerfile = fake_has_dockerfile
+    app.get_latest_commit_sha = fake_get_latest_commit_sha
+    app.build_and_push = fake_build_and_push
+    app.print = fake_print
+    try:
+        app.run_once("jjohnson83853", "tok", "main", "registry.local:5000", state_path)
+    finally:
+        app.list_owner_repos = orig_list
+        app.has_dockerfile = orig_has
+        app.get_latest_commit_sha = orig_sha
+        app.build_and_push = orig_build
+        app.print = orig_print
+
+    failure_lines = _build_failed_lines(messages)
+    assert len(failure_lines) == 1, messages
+    rec = json.loads(failure_lines[0])
+    assert rec["exit_code"] == 1, rec
+    assert "COPY failed" in rec["output_tail"], rec
+
+
 def test_has_dockerfile_404_is_not_logged():
     # Bug fix: a 404 from the contents endpoint just means "no Dockerfile",
     # which is the normal outcome for most owned repos - ADR-8's "log every
@@ -449,6 +534,8 @@ if __name__ == "__main__":
     test_build_and_push_uses_rev_parse_sha_not_precall_sha()
     test_run_once_build_failure_logs_build_failed_event()
     test_run_once_timeout_expired_also_reports_build_failed()
+    test_build_and_push_docker_build_failure_raises_build_error_with_output()
+    test_run_once_docker_build_failure_logs_output_tail()
     test_has_dockerfile_404_is_not_logged()
     test_has_dockerfile_500_is_still_logged()
     test_gh_get_other_call_sites_still_log_404()

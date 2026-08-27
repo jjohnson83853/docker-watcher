@@ -11,9 +11,27 @@ import urllib.request
 
 GITHUB_API = "https://api.github.com"
 
+# Cap on how much of a failed docker build/push's output rides along in one
+# log line - full output can run to thousands of lines (dependency installs
+# etc.), and Loki lines have a size limit too.
+MAX_BUILD_OUTPUT_CHARS = 4000
+
 
 def log(level, event, **fields):
     print(json.dumps({"level": level, "event": event, **fields}), flush=True)
+
+
+class BuildError(Exception):
+    """A failed `docker build`/`docker push` with its captured output
+    attached. Raised only for those two subprocess calls - ADR-5 still
+    applies to `git clone`/`git rev-parse` (their argv/output can carry the
+    tokenized clone URL), so those keep raising the bare
+    CalledProcessError/TimeoutExpired with no output captured."""
+
+    def __init__(self, returncode, output):
+        self.returncode = returncode
+        self.output = output
+        super().__init__(f"exited {returncode}")
 
 
 def gh_get(url, token, quiet_statuses=()):
@@ -94,6 +112,19 @@ def state_entry(state, name):
     return v.get("sha"), v.get("pushed_at")
 
 
+def _run_docker(cmd, timeout):
+    """Run a docker build/push command with output captured, so a failure
+    can carry it (BuildError) instead of just an exit code. Safe to capture
+    in full - unlike git clone, neither this argv nor its output can contain
+    the tokenized clone URL (ADR-5)."""
+    try:
+        subprocess.run(cmd, check=True, timeout=timeout, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        raise BuildError(e.returncode, (e.stdout or "") + (e.stderr or "")) from e
+    except subprocess.TimeoutExpired as e:
+        raise BuildError("timeout", (e.stdout or "") + (e.stderr or "")) from e
+
+
 def build_and_push(clone_url, branch, token, registry, image, timeout):
     """Clone, strip .git (ADR-4), build and push. Returns the SHA actually
     checked out (git rev-parse HEAD), which is what gets tagged and stored
@@ -138,9 +169,9 @@ def build_and_push(clone_url, branch, token, registry, image, timeout):
         # design change (a working BuildKit path first), not another
         # --build-arg.
         build_cmd.append(tmpdir)
-        subprocess.run(build_cmd, check=True, timeout=timeout)
+        _run_docker(build_cmd, timeout)
         for tag in tags:
-            subprocess.run(["docker", "push", tag], check=True, timeout=timeout)
+            _run_docker(["docker", "push", tag], timeout)
         return sha
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -199,6 +230,12 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
             save_state(state_path, state)  # FR-10: only after a successful push
             log("info", "build_success", repo=repo["full_name"], branch=repo_branch,
                 sha=built_sha[:7], image=f"{registry}/{image}")
+        except BuildError as e:
+            # ADR-5 does not apply here: docker build/push output has no
+            # token in it, so the captured tail is safe to log in full.
+            # alerts/build-failed.yaml matches on the "build failed" substring.
+            log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
+                exit_code=e.returncode, output_tail=e.output[-MAX_BUILD_OUTPUT_CHARS:])
         except subprocess.CalledProcessError as e:
             # ADR-5/NFR-2: never render argv (it contains the tokenized clone
             # URL) - log repo name and returncode only.
