@@ -10,6 +10,20 @@ services:
     env_file: .env
     volumes:
       - watcher-state:/data
+    healthcheck:
+      # Alive means the poll loop is still turning, not that a build
+      # succeeded - main() touches /data/heartbeat every cycle regardless
+      # of outcome. Staleness bound reads the same interval/timeout env
+      # vars the loop itself uses, so a longer BUILD_TIMEOUT_SECONDS
+      # doesn't cause false-unhealthy flaps mid-build.
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/data/heartbeat') < int(os.environ.get('POLL_INTERVAL_SECONDS', 300)) + int(os.environ.get('BUILD_TIMEOUT_SECONDS', 1800)) + 120 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # Covers a worst-case first cycle (default POLL_INTERVAL_SECONDS +
+      # BUILD_TIMEOUT_SECONDS + buffer) before the first heartbeat exists.
+      # Bump if those env vars are raised well past their defaults.
+      start_period: 2200s
     logging:
       driver: json-file
       options:

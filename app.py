@@ -265,12 +265,19 @@ def main():
     state_path = os.environ.get("STATE_FILE", "/data/state.json")
     interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
     build_timeout = int(os.environ.get("BUILD_TIMEOUT_SECONDS", "1800"))
+    heartbeat_path = os.environ.get("HEARTBEAT_FILE", "/data/heartbeat")
 
     while True:
         try:
             run_once(username, token, branch, registry, state_path, build_timeout)
         except Exception as e:
             log("error", "poll_cycle_failed", error_type=type(e).__name__)
+        finally:
+            # Written every cycle regardless of outcome - the healthcheck in
+            # docker-compose.yml only needs proof the loop is still turning,
+            # not that a build succeeded.
+            with open(heartbeat_path, "w"):
+                pass
         time.sleep(interval)
 
 
