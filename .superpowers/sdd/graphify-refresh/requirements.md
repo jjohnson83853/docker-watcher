@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Requirements
 
-Status: **confirmed by user.** This feature must not be implemented until design and tasks each receive separate user confirmation and the project gate is opened.
+Status: **revised draft — previous requirements confirmation remains recorded; renewed confirmation is pending because deployment discovery requires explicit shared-workspace serialization.** No implementation until requirements, design, and tasks each receive separate user confirmation and the project gate opens.
 
 ## 1. Goal
 
@@ -17,11 +17,14 @@ After docker-watcher successfully builds a watched repository's image, request G
 - **FR-7 Contract and deployment:** Before selecting an integration, verify Graphify's actual refresh interface, authentication, workspace identity/scope, sync/async semantics, status observability, watcher reachability, and deployed workspace mount. Expose the verified minimum configuration and bounded call timeout to the watcher. Do not duplicate Graphify's workspace mount in docker-watcher unless verification proves it necessary.
 - **FR-8 Workspace correspondence:** Refresh the source workspace Graphify already mounts, not docker-watcher's temporary build clone. The user accepts that workspace content may advance between Git push and build completion, so indexing can see newer working-tree content than the pushed commit. No source snapshots, clone handoff, synchronization, or revision pinning are required.
 
+- **FR-9 Shared aggregate serialization:** The deployed Graphify CLI updates the full `/workspace` source tree and writes one shared `/data/graph.json`. The watcher MUST permit at most one active or unresolved Graphify exec globally; that workspace job counts as in-flight for every repo. Successful builds during the job MUST persist per-repo target generations and coalesce rather than submit another job. An unresolved exec blocks all repos, including repos whose own request would otherwise be immediately eligible. This deliberately changes the wait boundary from per-repo to shared workspace; builds remain durable and may wait indefinitely for safe resolution or an explicit operator recovery decision.
+- **FR-10 Workspace snapshot and per-repo retry clocks:** Retry counts and known-failure eligibility remain per repo. Each workspace exec snapshots outstanding repo generations; verified success may satisfy every generation in that snapshot. A build arriving after the snapshot stays dirty. After terminal success, a follow-on runs only if some dirty target is eligible; a not-yet-due target alone waits until its persisted deadline. If another eligible target starts an update, its full-workspace snapshot may include other not-yet-due targets, and verified success may satisfy them. A failed workspace exec has no per-file result, so at failure observation all dirty targets—including targets added after the snapshot—are treated as affected and receive per-repo observed-failure accounting. Coalescing alone never changes an existing deadline.
+
 ## 3. Non-functional requirements and constraints
 
-- **NFR-1 Isolation:** Graphify errors are isolated per repository and never reclassified as image-build failures or allowed to abort later repositories.
-- **NFR-2 State safety:** Persist refresh intent before invocation, and persist retry, job, generation, and terminal transitions before acting on them. If a state write fails, report it as not persisted and suppress dependent actions.
-- **NFR-3 No secret leakage:** Enforce safe values, not merely safe field names. External status values map to a fixed internal enum; HTTP status is an integer from 100–599 or `unknown`; job IDs are logged only after bounded opaque-token validation or are omitted/hashed; configured repo/workspace identifiers are logged only after canonical bounded validation or are replaced by fixed safe values.
+- **NFR-1 Isolation:** Graphify errors never become image-build failures, prevent remaining tag pushes, abort repo processing, or stop build/push work for later repos. An unresolved shared-workspace exec may block later Graphify submissions globally as specified by FR-9; it does not block build/push processing.
+- **NFR-2 State safety:** Persist refresh intent before invocation, and persist retry, Docker exec ID, generation, and terminal-state transitions before acting on them. If a state write fails, report it as not persisted and suppress dependent actions.
+- **NFR-3 No secret leakage:** Enforce safe values, not merely safe field names. External ExecInspect states map to a fixed internal enum; Docker Engine HTTP status is an integer from 100–599 or `unknown`; Docker exec IDs are logged only after bounded opaque-token validation or are omitted/hashed; configured repo/workspace identifiers are logged only after canonical bounded validation or are replaced by fixed safe values.
 - **NFR-4 Minimal scope:** Use the existing watcher state and polling loop; no external queue/service, new telemetry system, broad refactor, or refresh for builds that did not succeed.
 - **NFR-5 Verifiable behavior:** Cover trigger ordering and push-failure retention, skipped/failed build no-trigger, retry persistence and timing, coalescing/no-overlap, async terminal handling where available, per-repo isolation, state-write failures, and secret-free events with deterministic tests. Verify the actual Graphify integration and mounted workspace before declaring end-to-end acceptance.
 - **NFR-6 Crash boundary:** Refresh intent is committed after Docker build success. A process crash before this state commit can lose that build's refresh trigger; no pre-build marker or replay mechanism is required.
@@ -32,7 +35,7 @@ After docker-watcher successfully builds a watched repository's image, request G
 - Retry is durable and indefinite for safely retryable observed failures, 60 seconds initially, doubled per observed failure, capped at 30 minutes. An unresolvable ambiguous asynchronous outcome is not automatically resubmitted.
 - The existing mounted Graphify workspace is the source; post-push/pre-build workspace drift is accepted.
 - Graphify failures have their own structured event vocabulary and do not reuse `build failed`.
-- The detailed invocation and completion semantics remain to be established against the deployed Graphify interface before the final design/tasks checkpoints and implementation.
+- The verified deployed invocation is a detached Docker Engine exec running code-only `graphify update /workspace` with `GRAPHIFY_OUT=/data`; completion is observed through nullable ExecInspect state. Shared-workspace queue, retry, and failure semantics are FR-9/FR-10. The production update remains unrun pending the gated live acceptance.
 
 ## 5. Out of scope
 

@@ -1,12 +1,12 @@
 # docker-watcher Graphify Refresh — Progress Ledger
 
-Status: **SpecDD draft; implementation gate closed.** The presence of this workspace blocks implementation dispatch until the verdicts and three separate user confirmations below are recorded and `.superpowers/sdd/GATE_OPEN` is written.
+Status: **SpecDD checkpoint-ready; implementation gate closed.** Revised FR-9/FR-10 await renewed requirements confirmation; design and task user checkpoints are pending. No implementation dispatch is authorized until all separate user confirmations and `.superpowers/sdd/GATE_OPEN`.
 
 ## SpecDD artifacts
 
-- Requirements: `requirements.md` — user-confirmed (“continue”, 2026-10-05).
-- Design: `design.md` — blocked; deployed Graphify contract unavailable; user confirmation pending.
-- Tasks: `tasks.md` — draft; contract discovery blocked; user confirmation pending.
+- Requirements: `requirements.md` — original version confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 Critic-approved and awaiting renewed confirmation.
+- Design: `design.md` — proposed global workspace exec and per-repo retry clocks; Critic-approved for checkpoint, user confirmation pending.
+- Tasks: `tasks.md` — revised shared graph lifecycle; Critic-approved for checkpoint, user confirmation pending.
 
 ## Critic reviews
 
@@ -19,23 +19,23 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 - Fourth review: Critic returned **REVISE** because the accepted-only task acceptance text contradicted the offered safe blocked option.
 - Amendment applied: the accepted-only checkpoint accepts either retaining the blocked unresolved state or explicitly approving possible overlap.
 - Final re-review of amended first draft: **APPROVE**; no further amendment required. Critic confirms the requirements checkpoint is ready.
+- Material redesign reviews 1–3 returned **REVISE** and were amended. Review 4 returned **APPROVE** for the revised requirements/design/tasks user checkpoints, not implementation; its minor Docker exec-ID terminology amendment is applied. Critic approved explicit global workspace blocking, per-repo retry clocks, post-snapshot failure accounting, follow-on eligibility, watcher-probe evidence scope, and rollback controls. Renewed requirements confirmation and separate design/tasks confirmations remain pending.
 
 ## Deployed contract discovery
 
-- Attempted after requirements confirmation, before final design/tasks checkpoints.
-- Portainer is exposed through the developer MCP connection, but the Portainer operator tool `mcp__devtools__Portainer_SessionStart` failed three times with `Portainer MCP session expired. Tool call to mcp__devtools__Portainer_SessionStart failed: Session expired`; no resource reads succeeded through that tool. A separate recovery task confirmed the same auth/session blocker.
-- An earlier exploratory task issued gateway/MCP requests but was interrupted after exhausting its probe budget before producing a verifiable report; its unrecovered output is not treated as evidence.
-- Unverified: invocation/auth, workspace mapping/currentness, completion semantics, job status/reconciliation, watcher reachability, and Graphify timeout. Local watcher config does not establish the Graphify contract.
-- Initial prerequisite was to reconnect the legacy developer Portainer MCP session; after restart, the user supplied a different `Portainer__*` route. Current blocker is that this new namespace is not bound in the assistant/operator tool inventory.
-- After the user restarted MetaMCP and the Portainer MCP server, a retry did not produce a Portainer discovery result and was stopped after running for about 4m25s. Loki diagnosis was attempted as requested but no logs were retrievable: Loki API at `loki:3100` and `localhost:3100` was unreachable; Grafana datasource discovery returned HTTP 401 Unauthorized. Root cause of the retry is unconfirmed; no post-restart Portainer contract fields were verified.
-- The user supplied the new Developer → Portainer MCP tool sequence and prohibited the legacy `Portainer_SessionStart` route. `Portainer__systemStatus` could not be invoked in this assistant session: `xd://Portainer__systemStatus` returned `No such tool`, and the operator agent reported that the `Portainer__*` tools are absent from its bound inventory. No deployment facts were gathered through the new route. Required prerequisite: expose those tools to this assistant/operator session.
-- Design and tasks checkpoints remain blocked; do not infer a contract or dispatch implementation until discovery is complete.
+- Portainer inspection: `graphify-mcp` container `800c81850c30531cd6fa23578ea9ae2dbcfe75dcc32984db4d6713479128f7ab`, Graphify `0.9.67`, `/srv/mcp-grafana/graphify-out` → `/data`, `/scratch/workspace` → `/workspace`. `/data/graph.json` was 39,246,926 bytes; the manifest contains `docker-watcher/...` paths. No `/workspace/docker-watcher/graphify-out/graph.json` exists.
+- `/workspace/docker-watcher` exists at commit `3506148fb54236c0e19551055d300a10cc34cae4`. The graph source identity includes `docker-watcher/app.py`; the graph is aggregate, rooted at workspace-relative paths. The checked-out revision is a snapshot, not proof it tracks each new push.
+- The installed Graphify CLI is `0.9.67`. Source inspection showed `graphify update <path>` re-extracts code without an LLM and uses `_rebuild_code(..., block_on_lock=True)` on `out/.rebuild.lock`; `GRAPHIFY_OUT=/data` makes that `/data/.rebuild.lock`. The design enforces one watcher-owned workspace exec and treats Graphify’s lock only as defense, not as the watcher serialization guarantee. The update command itself has not run.
+- Watcher-route probe: through Portainer-assisted `exec` into the running `docker-watcher`, the command `docker exec -e GRAPHIFY_OUT=/data graphify-mcp graphify check-update /workspace/docker-watcher` used the watcher’s configured `DOCKER_HOST` and exited 0. This proves the Docker CLI command path only; the proposed direct HTTP transport and production `graphify update` remain unverified.
+- Docker Engine `/version` via Portainer reported `29.8.1`. Harmless Engine exec probes via Portainer observed: created/unstarted `Running=false, ExitCode=null`; running `sleep` `Running=true, ExitCode=null`; completed `true` `Running=false, ExitCode=0`; repeated start after completion returned HTTP 409 `already run`. These probes did not execute Graphify update or modify `/data/graph.json`.
+- The proposed live update remains unverified. Before its first run, tasks require a frozen workspace, exclusive writer coordination, a durable archive backup, graph parse/readback checks, unaffected-repo node/edge comparison, and rollback on failure.
+- Existing separate-workspace race is retained: indexing can see content newer than the pushed revision. No snapshot, clone transfer, or pinning was added.
 
 ## User checkpoints
 
-- Requirements: confirmed by user (“continue”, 2026-10-05).
-- Design: pending.
-- Tasks: pending.
+- Requirements: original version confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 Critic-approved and awaiting renewed user confirmation.
+- Design: Critic-approved; separate user confirmation pending.
+- Tasks: Critic-approved; separate user confirmation pending.
 
 ## Implementation
 
