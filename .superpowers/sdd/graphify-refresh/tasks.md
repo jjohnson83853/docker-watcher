@@ -21,14 +21,14 @@ Status: **draft — awaiting user requirements checkpoint.** Read `requirements.
 
 ## 3. Implement per-repo refresh scheduling and outcomes
 
-- Invoke immediately only when there is no pending retry or in-flight job.
-- Coalesce newer builds into pending retry without an extra immediate call or due-time/backoff reset.
+- Invoke immediately only when there is no pending retry, tracked in-flight job, or unresolved potentially accepted request.
+- Coalesce newer builds into a pending retry without an extra immediate call or due-time/backoff reset.
 - Prevent overlapping observable jobs; persist dirty generations; poll at most once per repo per normal watcher cycle; clear only the indexed generation after durable terminal success; follow newer content at most once after persisting that transition.
-- Implement indefinitely retrying 60s/doubling/30m-cap backoff for safely retryable observed failures. Separate failure-observed deadlines from attempt-start crash-recovery fallback deadlines. Retain/reuse the ambiguous attempt key only for verified reconciliation/idempotent replay. If an async request may have been accepted and cannot be reconciled or identified, retain an unresolved intent and block automatic resubmission pending explicit user resolution; do not claim retry-until-success for that state.
+- Implement indefinitely retrying 60s/doubling/30m-cap backoff for safely retryable observed failures. Separate failure-observed deadlines from attempt-start crash-recovery fallback deadlines. Retain/reuse the ambiguous attempt key only for verified reconciliation/idempotent replay. If an async request may have been accepted and cannot be reconciled or identified, persist an unresolved per-repo intent that blocks submission for all generations, including after restart and after its eligibility deadline. Coalesce later builds into its durable latest target without resetting clocks. Resume only after verified safe resolution or explicit user decision to accept a weaker no-overlap guarantee; elapsed time alone never authorizes replay.
 - Retry poll errors on the next normal watcher cycle without submitting another job. Retain nonterminal jobs indefinitely, at most one poll per repo/cycle, without inventing a timeout or overlapping a replacement.
 - Implement verified synchronous, observable-async, and/or accepted-only semantics without claiming indexing completion beyond available evidence. Isolate invocation, decoding, polling, and persistence errors per repo.
 
-**Acceptance:** Deterministic clock/client scenarios prove timing, restart persistence, coalescing, no overlap, poll bounds, terminal behavior, ambiguity handling, and persistence-failure suppression.
+**Acceptance:** Deterministic clock/client scenarios prove timing, restart persistence, coalescing, no overlap, poll bounds, terminal behavior, ambiguity handling, and persistence-failure suppression. Include unresolved generation A followed by successful build B with no invocation; include crash-after-send, restart, elapsed deadline, and no replay when acceptance cannot be reconciled.
 
 ## 4. Add safe events, configuration, and operational documentation
 

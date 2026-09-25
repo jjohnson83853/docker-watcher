@@ -12,7 +12,9 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 
 - First-draft review: Critic returned **REVISE** for requirements, design, and tasks. Findings: async ambiguity could violate no-overlap; post-build persistence leaves a crash gap; contract branch discovery may invalidate later checkpoints; unavailable live smoke must not count as integration acceptance; workspace mapping and nonterminal/poll-error handling need explicit treatment.
 - Amendments applied: narrowed crash guarantee and recorded window; gated unresolvable async resubmission for a later user decision; moved read-only contract discovery after requirements but before final design/tasks checkpoints, with re-review/reconfirmation on material changes; separated local verification from end-to-end acceptance; added mapping, polling, and nonterminal behavior.
-- Re-review of amended first draft: pending.
+- Second review: Critic returned **REVISE** because an unresolved async attempt did not explicitly block a later generation's immediate submission or replay after restart/deadline.
+- Additional amendments applied: unresolved potentially accepted work now blocks all generations per repo, later builds coalesce durably into its latest target, and elapsed eligibility never authorizes replay; added restart and A→B acceptance scenarios.
+- Re-review of amended draft: pending.
 
 ## User checkpoints
 
