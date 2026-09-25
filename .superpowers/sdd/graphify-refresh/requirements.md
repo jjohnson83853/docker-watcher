@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Requirements
 
-Status: **draft — awaiting user requirements checkpoint.** This feature must not be implemented until requirements, design, and tasks each receive separate user confirmation and the project gate is opened.
+Status: **confirmed by user.** This feature must not be implemented until design and tasks each receive separate user confirmation and the project gate is opened.
 
 ## 1. Goal
 

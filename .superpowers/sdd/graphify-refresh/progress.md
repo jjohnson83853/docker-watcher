@@ -4,7 +4,7 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 
 ## SpecDD artifacts
 
-- Requirements: `requirements.md` — draft; user confirmation pending.
+- Requirements: `requirements.md` — user-confirmed (“continue”, 2026-10-05).
 - Design: `design.md` — draft; user confirmation pending.
 - Tasks: `tasks.md` — draft; user confirmation pending.
 
@@ -22,7 +22,7 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 
 ## User checkpoints
 
-- Requirements: pending.
+- Requirements: confirmed by user (“continue”, 2026-10-05).
 - Design: pending.
 - Tasks: pending.
 
