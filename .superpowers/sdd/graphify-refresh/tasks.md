@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Tasks
 
-Status: **draft — requirements confirmed; design/tasks checkpoints blocked on deployed Graphify contract discovery.** Read `requirements.md` and `design.md` first. Task 1 was attempted after requirements confirmation; its unresolved prerequisites are recorded in `design.md`. Any material update requires fresh Critic review and renewed user confirmation. Implementation is blocked until all three user checkpoints, Critic verdicts, and project gate are recorded.
+Status: **draft — requirements confirmed; design/tasks checkpoints blocked on Portainer MCP session recovery and deployed Graphify contract discovery.** Read `requirements.md` and `design.md` first. Task 1 was attempted after requirements confirmation; its unresolved prerequisites are recorded in `design.md`. Any material update requires fresh Critic review and renewed user confirmation. Implementation is blocked until all three user checkpoints, Critic verdicts, and project gate are recorded.
 
 ## 1. Resolve deployed contract (after requirements checkpoint; before design/tasks checkpoints)
 

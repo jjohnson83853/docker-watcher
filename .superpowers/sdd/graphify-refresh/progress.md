@@ -23,9 +23,10 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 ## Deployed contract discovery
 
 - Attempted after requirements confirmation, before final design/tasks checkpoints.
-- Outcome: blocked. Available MCP access did not expose a Graphify/infrastructure resource catalog; `read mcp://` requires a resource URI, and no URI was available. No local `graphify-out/` files or Graphify endpoint/config were found in watcher deployment files.
-- Unverified: invocation/auth, workspace mapping/currentness, completion semantics, job status/reconciliation, watcher reachability, and Graphify timeout.
-- No production refresh/connectivity probe was made because no endpoint or safe runtime query path was available. Required prerequisite: accessible deployed Graphify API/discovery resource plus read-only mount and watcher-network inspection.
+- Portainer is exposed through the developer MCP connection, but the Portainer operator tool `mcp__devtools__Portainer_SessionStart` failed three times with `Portainer MCP session expired. Tool call to mcp__devtools__Portainer_SessionStart failed: Session expired`; no resource reads succeeded through that tool. A separate recovery task confirmed the same auth/session blocker.
+- An earlier exploratory task issued gateway/MCP requests but was interrupted after exhausting its probe budget before producing a verifiable report; its unrecovered output is not treated as evidence.
+- Unverified: invocation/auth, workspace mapping/currentness, completion semantics, job status/reconciliation, watcher reachability, and Graphify timeout. Local watcher config does not establish the Graphify contract.
+- No production refresh/connectivity probe was made. Required prerequisite: reconnect or renew the developer Portainer MCP session, then inspect both deployments read-only.
 - Design and tasks checkpoints remain blocked; do not infer a contract or dispatch implementation until discovery is complete.
 
 ## User checkpoints
