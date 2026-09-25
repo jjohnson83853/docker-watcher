@@ -16,6 +16,7 @@ Status: **draft — awaiting user requirements checkpoint.** Read `requirements.
 - Add a durable per-repository refresh intent to existing watcher state immediately after build success and before submission; retain it across later tag failures.
 - Store local request key, attempt-start/fallback deadline, generation, observed-failure count, retry eligibility, safe last outcome, and pending-job/dirty-generation data as required by the verified contract.
 - Preserve compatibility with existing state, atomic persistence, and image/push behavior.
+
 **Acceptance:** Each logical successful build generation gets one durable intent if its post-build state commit completes, despite later push failure; a crash before that commit may lose the trigger as documented. Failed/skipped/unchanged builds do not. A Graphify error does not prevent tag pushes or processing another repo. No intent is acted on before its state write succeeds.
 
 ## 3. Implement per-repo refresh scheduling and outcomes
@@ -33,6 +34,7 @@ Status: **draft — awaiting user requirements checkpoint.** Read `requirements.
 
 - Emit structured `graphify_refresh` failure events using only the validated/sanitized values and fixed vocabulary in the design; never reuse `build failed` for Graphify-only errors.
 - Add only verified endpoint/auth/timeout and any necessary workspace-mapping configuration to `.env.template` and `docker-compose.yml`; add dependencies only if demonstrated necessary. Keep Graphify's existing workspace mount; do not duplicate it in watcher.
+- Document the verified contract, retry and completion semantics, workspace race, accepted-only limitation if applicable, and operational configuration.
 
 **Acceptance:** Tests prove secrets, raw payloads/responses/exceptions, invalid identifiers, invalid status values, and unsafe job IDs do not appear in events. Valid values are bounded and safe. Configuration is explicit and secrets remain external.
 
