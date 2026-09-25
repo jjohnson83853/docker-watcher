@@ -27,6 +27,7 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 - An earlier exploratory task issued gateway/MCP requests but was interrupted after exhausting its probe budget before producing a verifiable report; its unrecovered output is not treated as evidence.
 - Unverified: invocation/auth, workspace mapping/currentness, completion semantics, job status/reconciliation, watcher reachability, and Graphify timeout. Local watcher config does not establish the Graphify contract.
 - No production refresh/connectivity probe was made. Required prerequisite: reconnect or renew the developer Portainer MCP session, then inspect both deployments read-only.
+- After the user restarted MetaMCP and the Portainer MCP server, a retry did not produce a Portainer discovery result and was stopped after running for about 4m25s. Loki diagnosis was attempted as requested but no logs were retrievable: Loki API at `loki:3100` and `localhost:3100` was unreachable; Grafana datasource discovery returned HTTP 401 Unauthorized. Root cause of the retry is unconfirmed; no post-restart Portainer contract fields were verified.
 - Design and tasks checkpoints remain blocked; do not infer a contract or dispatch implementation until discovery is complete.
 
 ## User checkpoints
