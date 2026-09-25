@@ -1,15 +1,15 @@
 # docker-watcher Graphify Refresh — Tasks
 
-Status: **requirements and design confirmed; tasks checkpoint pending.** Deployment discovery is complete. Read `requirements.md` and `design.md` first. Any material change requires fresh Critic review and separate user confirmation. Implementation remains blocked until task confirmation, all Critic verdicts, and the project gate are recorded.
+Status: **confirmed by user.** Requirements and design were previously confirmed; task checkpoint completed. Implementation remains blocked until all Critic verdicts and confirmations are recorded and `.superpowers/sdd/GATE_OPEN` is written.
 
-## 1. Record verified deployed contract (complete; tasks checkpoint pending)
+## 1. Record verified deployed contract (complete)
 
 - Record Graphify `0.9.67`, its read-only MCP tools, the installed code-only `graphify update <path>` CLI, `GRAPHIFY_OUT=/data`, the aggregate `/workspace` source root, and the shared `/data/graph.json` in `design.md`.
 - Record that Graphify HTTP is unreachable from the watcher network. A read-only `graphify check-update` executed inside the running watcher via Portainer-assisted exec and its configured `DOCKER_HOST` exited 0; this is CLI-path evidence, not proof of the proposed standard-library client or production update.
 - Propose one serialized Docker Engine exec lifecycle (`create` → persist ID → `start` → `inspect`) updating `/workspace` into `/data`; keep unresolved executions blocked, and document code-only scope and the accepted push-to-build workspace race.
-- The actual production update has not been run. Do not mutate the graph before tasks confirmation.
+- The actual production update has not been run. Do not mutate the graph until the live-acceptance safeguards in section 5 are established.
 
-**Acceptance:** Design identifies the verified source/output mapping, invocation route, success and ambiguity semantics, and shared-graph serialization. Deployment evidence is recorded; task confirmation remains pending.
+**Acceptance:** Design identifies the verified source/output mapping, invocation route, success and ambiguity semantics, and shared-graph serialization. Deployment evidence and user checkpoint are recorded.
 
 
 ## 2. Persist per-repository refresh targets and shared execution state

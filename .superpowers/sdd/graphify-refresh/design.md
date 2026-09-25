@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Design
 
-Status: **confirmed by user.** Deployment contract verified; design checkpoint completed. Tasks checkpoint and implementation gate remain closed. No implementation is authorized before tasks confirmation and the project gate.
+Status: **confirmed by user.** Deployment contract verified; requirements, design, and tasks checkpoints completed. Implementation gate remains closed until `.superpowers/sdd/GATE_OPEN` is recorded.
 
 ## 1. Verified deployment contract and proposed invocation
 
