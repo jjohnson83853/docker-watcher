@@ -11,5 +11,5 @@ FROM python:3.12-alpine
 RUN apk add --no-cache docker-cli=29.5.3-r1 git
 
 WORKDIR /app
-COPY app.py .
+COPY app.py graphify_refresh.py ./
 CMD ["python", "app.py"]
