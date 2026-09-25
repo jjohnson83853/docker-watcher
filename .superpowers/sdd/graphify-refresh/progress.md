@@ -18,7 +18,7 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 - Additional amendments applied: accepted-only semantics now block later submissions unless the user explicitly approves the overlap tradeoff; contract discovery must obtain that decision; added the exact timeout-A/coalesced-B/no-invocation acceptance scenario.
 - Fourth review: Critic returned **REVISE** because the accepted-only task acceptance text contradicted the offered safe blocked option.
 - Amendment applied: the accepted-only checkpoint accepts either retaining the blocked unresolved state or explicitly approving possible overlap.
-- Re-review of amended draft: pending.
+- Final re-review of amended first draft: **APPROVE**; no further amendment required. Critic confirms the requirements checkpoint is ready.
 
 ## User checkpoints
 
