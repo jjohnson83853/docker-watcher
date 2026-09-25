@@ -8,7 +8,7 @@ Status: **draft — awaiting user requirements checkpoint.** Read `requirements.
 - Record evidence and select the synchronous, observable-async, or unobservable-async branch in `design.md`. If accepted acknowledgments have no status API, present the explicit tradeoff: block later submissions indefinitely unless status is safely resolved, or permit successive requests that may overlap. Obtain the user's decision before selecting the latter branch.
 - Submit material design/tasks changes from discovery to Critic again and obtain renewed user confirmations before implementation.
 
-**Acceptance:** Design identifies a verified request and source mapping, accurately states success/ambiguity behavior, and records the accepted post-push/pre-build workspace race. An accepted-only async branch cannot be selected without explicit approval of the overlap tradeoff. If the contract cannot be verified, implementation remains blocked.
+**Acceptance:** Design identifies a verified request and source mapping, accurately states success/ambiguity behavior, and records the accepted post-push/pre-build workspace race. For accepted-only async, record the user's choice before selecting that branch: retain unresolved state and block later submissions, or, only with explicit user approval of possible overlap, permit successive requests. Selecting the blocked option does not require approval of overlap. If the contract cannot be verified, implementation remains blocked.
 
 
 ## 2. Persist refresh lifecycle independently from image publication

@@ -16,6 +16,8 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 - Additional amendments applied: unresolved potentially accepted work now blocks all generations per repo, later builds coalesce durably into its latest target, and elapsed eligibility never authorizes replay; added restart and A→B acceptance scenarios.
 - Third review: Critic returned **REVISE** because accepted-only async acknowledgments could allow later overlapping requests without explicit approval, and the timeout-A → build-B test scenario was underspecified.
 - Additional amendments applied: accepted-only semantics now block later submissions unless the user explicitly approves the overlap tradeoff; contract discovery must obtain that decision; added the exact timeout-A/coalesced-B/no-invocation acceptance scenario.
+- Fourth review: Critic returned **REVISE** because the accepted-only task acceptance text contradicted the offered safe blocked option.
+- Amendment applied: the accepted-only checkpoint accepts either retaining the blocked unresolved state or explicitly approving possible overlap.
 - Re-review of amended draft: pending.
 
 ## User checkpoints
