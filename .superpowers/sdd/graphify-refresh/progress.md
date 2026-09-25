@@ -1,12 +1,12 @@
 # docker-watcher Graphify Refresh — Progress Ledger
 
-Status: **SpecDD checkpoint-ready; implementation gate closed.** Revised FR-9/FR-10 await renewed requirements confirmation; design and task user checkpoints are pending. No implementation dispatch is authorized until all separate user confirmations and `.superpowers/sdd/GATE_OPEN`.
+Status: **Requirements confirmed; design and task checkpoints pending; implementation gate closed.** No implementation dispatch is authorized until both remaining user confirmations and `.superpowers/sdd/GATE_OPEN`.
 
 ## SpecDD artifacts
 
-- Requirements: `requirements.md` — original version confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 Critic-approved and awaiting renewed confirmation.
-- Design: `design.md` — proposed global workspace exec and per-repo retry clocks; Critic-approved for checkpoint, user confirmation pending.
-- Tasks: `tasks.md` — revised shared graph lifecycle; Critic-approved for checkpoint, user confirmation pending.
+- Requirements: `requirements.md` — original version confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 separately confirmed in this conversation.
+- Design: `design.md` — proposed global workspace exec and per-repo retry clocks; Critic-approved, confirmation pending.
+- Tasks: `tasks.md` — revised shared graph lifecycle; Critic-approved, confirmation pending.
 
 ## Critic reviews
 
@@ -19,7 +19,7 @@ Status: **SpecDD checkpoint-ready; implementation gate closed.** Revised FR-9/FR
 - Fourth review: Critic returned **REVISE** because the accepted-only task acceptance text contradicted the offered safe blocked option.
 - Amendment applied: the accepted-only checkpoint accepts either retaining the blocked unresolved state or explicitly approving possible overlap.
 - Final re-review of amended first draft: **APPROVE**; no further amendment required. Critic confirms the requirements checkpoint is ready.
-- Material redesign reviews 1–3 returned **REVISE** and were amended. Review 4 returned **APPROVE** for the revised requirements/design/tasks user checkpoints, not implementation; its minor Docker exec-ID terminology amendment is applied. Critic approved explicit global workspace blocking, per-repo retry clocks, post-snapshot failure accounting, follow-on eligibility, watcher-probe evidence scope, and rollback controls. Renewed requirements confirmation and separate design/tasks confirmations remain pending.
+- Material redesign reviews 1–3 returned **REVISE** and were amended. Review 4 returned **APPROVE** for the revised requirements/design/tasks user checkpoints, not implementation; its minor Docker exec-ID terminology amendment is applied. Critic approved explicit global workspace blocking, per-repo retry clocks, post-snapshot failure accounting, follow-on eligibility, watcher-probe evidence scope, and rollback controls. Requirements were re-confirmed by the user; separate design/tasks confirmations remain pending.
 
 ## Deployed contract discovery
 
@@ -33,7 +33,7 @@ Status: **SpecDD checkpoint-ready; implementation gate closed.** Revised FR-9/FR
 
 ## User checkpoints
 
-- Requirements: original version confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 Critic-approved and awaiting renewed user confirmation.
+- Requirements: original version confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 separately confirmed in this conversation.
 - Design: Critic-approved; separate user confirmation pending.
 - Tasks: Critic-approved; separate user confirmation pending.
 

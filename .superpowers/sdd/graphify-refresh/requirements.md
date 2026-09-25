@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Requirements
 
-Status: **revised draft — previous requirements confirmation remains recorded; renewed confirmation is pending because deployment discovery requires explicit shared-workspace serialization.** No implementation until requirements, design, and tasks each receive separate user confirmation and the project gate opens.
+Status: **confirmed by user.** The original requirements were confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 were separately confirmed in this conversation after Critic APPROVE. No implementation until design and tasks each receive separate user confirmation and the project gate opens.
 
 ## 1. Goal
 

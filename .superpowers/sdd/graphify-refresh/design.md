@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Design
 
-Status: **proposed design; deployment contract verified; revised shared-workspace requirements await renewed confirmation.** Design/tasks checkpoints also remain pending. No implementation is authorized until all separate confirmations and the project gate are recorded.
+Status: **proposed design; deployment contract verified; requirements confirmed; design checkpoint pending.** Tasks approval and the project gate remain closed. No implementation is authorized before their separate confirmation.
 
 ## 1. Verified deployment contract and proposed invocation
 

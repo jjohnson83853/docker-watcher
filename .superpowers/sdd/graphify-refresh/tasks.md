@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Tasks
 
-Status: **draft — original requirements were confirmed; revised FR-9/FR-10 await renewed confirmation.** Deployment discovery is complete; design and task checkpoints remain pending. Read `requirements.md` and `design.md` first. Material changes require fresh Critic review and separate user confirmations. Implementation is blocked until all applicable checkpoints, Critic verdicts, and project gate are recorded.
+Status: **draft — requirements confirmed.** Deployment discovery is complete; design and task checkpoints remain pending. Read `requirements.md` and `design.md` first. Any material change requires fresh Critic review and separate user confirmation. Implementation remains blocked until all checkpoints, Critic verdicts, and the project gate are recorded.
 
 ## 1. Record verified deployed contract (complete; design/tasks checkpoint still pending)
 
