@@ -40,3 +40,10 @@ Status: **All three checkpoints confirmed; implementation gate open; local imple
 ## Implementation
 
 Implemented in `app.py` and `graphify_refresh.py`; `.env.template` and root `design.md` document the request timeout and operational contract. `python3 test_app.py` passes. Throwaway local fake Docker Engine TCP lifecycle and Unix-socket API-version smokes passed. No production Graphify update, deployment, or restart was performed. Live acceptance requires frozen `/workspace`, exclusive writer coordination, verified archive/rollback, graph parse/readback, and unaffected-repo baseline comparison.
+
+## Deployment hotfix (2026-09-25)
+
+- First production deploy of `ffcc386` crash-looped: the Dockerfile still shipped only `app.py`, so `main()`'s unguarded `from graphify_refresh import build_from_env` raised `ModuleNotFoundError`.
+- Fixes (commits `3472295`, `421cd0c`): Dockerfile now `COPY app.py graphify_refresh.py ./`; `main()` degrades to `graphify = None` with a single `graphify_refresh_module_unavailable` warning when the module is absent. Spec update recorded here per bug-fix flow.
+- User rebuilt, pushed, and redeployed: container healthy, `restarts=0`, startup log `repos_found count=39`, no `invalid_config` events; image history confirms the module layer. The Graphify controller is armed (module present, `DOCKER_HOST` parsed).
+- User rule: registry pushes (`registry.localdomain:5000`) are off limits to agents and saved in workspace `AGENTS.md`; the user performs image builds and pushes.
