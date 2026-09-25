@@ -1,0 +1,38 @@
+# docker-watcher Graphify Refresh — Requirements
+
+Status: **draft — awaiting user requirements checkpoint.** This feature must not be implemented until requirements, design, and tasks each receive separate user confirmation and the project gate is opened.
+
+## 1. Goal
+
+After docker-watcher successfully builds a watched repository's image, request Graphify to refresh the corresponding workspace in Graphify's already-mounted source tree. The request is triggered by build success, not by successful image publication.
+
+## 2. Functional requirements
+
+- **FR-1 Build-success trigger:** A successful Docker image build creates exactly one durable refresh intent for that repository, even if a subsequent push of either image tag fails. A failed, skipped, or unchanged build creates no refresh intent.
+- **FR-2 Immediate initial attempt:** If that repository has neither a pending retry nor an in-flight Graphify job, invoke the first refresh in the same watcher cycle, only after persisting the pending intent. A Graphify invocation failure must not prevent remaining tag pushes or processing later repositories.
+- **FR-3 Per-repository coalescing:** A new successful build while a retry is pending updates the target to the latest workspace content without issuing another immediate request or changing the already scheduled retry time/backoff. While a tracked Graphify job is in flight, record a durable newer/dirty generation and never overlap jobs; upon terminal success, permit at most one follow-up for the newest generation, after persisting the terminal transition. A failed job retries against the newest target.
+- **FR-4 Durable retries:** Persist retry state in docker-watcher's existing state storage so it survives watcher cycles and restarts. Retry indefinitely with exponential backoff: initial delay 60 seconds, factor 2, cap 30 minutes. Known failures schedule from when failure is observed; a distinct pre-submission deadline provides crash recovery if the outcome becomes ambiguous. Persisted retry eligibility and failure count must not be reset or delayed by coalesced builds.
+- **FR-5 Outcome accuracy:** Treat verified synchronous completion as success. For asynchronous refreshes with observable job status, an accepted acknowledgment remains pending and is polled no more than once per repository per normal watcher cycle until terminal status. Remove pending state only after terminal success and successful persistence. If Graphify cannot expose job status, an accepted acknowledgment means only “refresh requested”; explicitly disclose that indexing completion is unconfirmed. Timeouts and ambiguous outcomes are not success.
+- **FR-6 Safe failure reporting:** Log detected invocation, response-decoding, polling, persistence, and terminal-job failures as distinct structured `graphify_refresh` events. Include only allowlisted, sanitized values and retry timing when applicable. Do not use the `build failed` alert prefix for Graphify-only failures; do not log credentials, request payloads, raw response bodies, raw exception text/tracebacks, unvalidated job IDs, raw hosts/paths, or invalid configured identifiers.
+- **FR-7 Contract and deployment:** Before selecting an integration, verify Graphify's actual refresh interface, authentication, workspace identity/scope, sync/async semantics, status observability, watcher reachability, and deployed workspace mount. Expose the verified minimum configuration and bounded call timeout to the watcher. Do not duplicate Graphify's workspace mount in docker-watcher unless verification proves it necessary.
+- **FR-8 Workspace correspondence:** Refresh the source workspace Graphify already mounts, not docker-watcher's temporary build clone. The user accepts that workspace content may advance between Git push and build completion, so indexing can see newer working-tree content than the pushed commit. No source snapshots, clone handoff, synchronization, or revision pinning are required.
+
+## 3. Non-functional requirements and constraints
+
+- **NFR-1 Isolation:** Graphify errors are isolated per repository and never reclassified as image-build failures or allowed to abort later repositories.
+- **NFR-2 State safety:** Persist refresh intent before invocation, and persist retry, job, generation, and terminal transitions before acting on them. If a state write fails, report it as not persisted and suppress dependent actions.
+- **NFR-3 No secret leakage:** Enforce safe values, not merely safe field names. External status values map to a fixed internal enum; HTTP status is an integer from 100–599 or `unknown`; job IDs are logged only after bounded opaque-token validation or are omitted/hashed; configured repo/workspace identifiers are logged only after canonical bounded validation or are replaced by fixed safe values.
+- **NFR-4 Minimal scope:** Use the existing watcher state and polling loop; no external queue/service, new telemetry system, broad refactor, or refresh for builds that did not succeed.
+- **NFR-5 Verifiable behavior:** Cover trigger ordering and push-failure retention, skipped/failed build no-trigger, retry persistence and timing, coalescing/no-overlap, async terminal handling where available, per-repo isolation, state-write failures, and secret-free events with deterministic tests. Verify the actual Graphify integration and mounted workspace before declaring end-to-end acceptance.
+
+## 4. Explicit decisions
+
+- Trigger is successful image build, irrespective of later tag-push outcome.
+- Retry is durable and indefinite, 60 seconds initially, doubled per observed failure, capped at 30 minutes.
+- The existing mounted Graphify workspace is the source; post-push/pre-build workspace drift is accepted.
+- Graphify failures have their own structured event vocabulary and do not reuse `build failed`.
+- The detailed invocation and completion semantics remain to be established against the deployed Graphify interface before implementation.
+
+## 5. Out of scope
+
+No clone handoff or exact-commit snapshotting; no additional watcher mount without demonstrated need; no refresh on unchanged, skipped, or failed builds; no external queue, retry service, or telemetry platform; no broad watcher architecture refactor; no implementation before all SpecDD checkpoints and the project gate are complete.
