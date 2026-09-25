@@ -1,0 +1,1 @@
+Implementation gate opened after Critic APPROVE reviews and separate user confirmations of requirements, design, and tasks for graphify-refresh (2026-10-05). Production Graphify mutation remains gated by the live-acceptance safeguards in the approved tasks.

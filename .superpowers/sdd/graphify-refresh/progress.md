@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Progress Ledger
 
-Status: **Requirements, design, and tasks confirmed; implementation gate closed pending marker.** No implementation dispatch until `.superpowers/sdd/GATE_OPEN` is recorded.
+Status: **All three user checkpoints and Critic approvals recorded; implementation gate open.** Engineer implementation is in progress; production Graphify mutation remains gated by the live-acceptance safeguards.
 
 ## SpecDD artifacts
 
@@ -39,4 +39,4 @@ Status: **Requirements, design, and tasks confirmed; implementation gate closed 
 
 ## Implementation
 
-Blocked. No implementation agent has been dispatched and no Graphify behavior has been changed.
+Gate open. `GraphifyRefreshImpl` engineer dispatched for implementation. No production Graphify update or deployment has been performed.
