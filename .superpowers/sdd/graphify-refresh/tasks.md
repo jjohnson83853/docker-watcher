@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Tasks
 
-Status: **confirmed by user.** Requirements and design were previously confirmed; task checkpoint completed. Implementation remains blocked until all Critic verdicts and confirmations are recorded and `.superpowers/sdd/GATE_OPEN` is written.
+Status: **Requirements, design, and tasks confirmed; implementation gate open.** Local implementation and deterministic verification are complete. Production Graphify update remains gated by the live-acceptance safeguards in section 5. Read `requirements.md` and `design.md` first; any material change requires fresh Critic review and separate user confirmation.
 
 ## 1. Record verified deployed contract (complete)
 

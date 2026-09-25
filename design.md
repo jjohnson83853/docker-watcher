@@ -308,3 +308,37 @@ one more rule in the same file using `absent_over_time` on the same stream selec
 window a few multiples of `POLL_INTERVAL_SECONDS`. Not built now because it needs tuning to
 avoid false alarms on restarts, and the failure it catches is rarer than the one we do
 catch. Named here so it is a known gap rather than an assumed capability.
+
+## 7. Graphify workspace refresh
+
+The watcher uses its configured `DOCKER_HOST` to negotiate the Docker Engine API
+version and execute the fixed `graphify update /workspace` command in the exact
+`graphify-mcp` container, with `GRAPHIFY_OUT=/data`. This is code-only indexing
+of the Graphify container's existing `/workspace` mount into the shared
+`/data/graph.json`; it does not update docs, papers, or images. No additional
+mount, Graphify HTTP route, or Graphify credential is used. Each Engine request
+is bounded by `GRAPHIFY_DOCKER_REQUEST_TIMEOUT_SECONDS` (default 10 seconds).
+
+There is one workspace-wide exec at a time because every run scans the aggregate
+workspace and writes one graph. Graphify 0.9.67's shared `/data/.rebuild.lock`
+is defense in depth only, not the watcher lock. Successful image builds persist
+a per-repository target generation immediately after build completion, before
+tag pushes; failed pushes retain that refresh target. Retry clocks are per repo:
+60 seconds, doubling after each observed failure, capped at 30 minutes. New
+builds coalesce without resetting a deadline. Workspace failure observation
+marks every dirty repo failed because Graphify supplies no per-file result.
+
+ExecInspect `Running=true` means keep polling; a non-null `ExitCode` is terminal
+(zero succeeds); `Running=false, ExitCode=null` means not started. The watcher
+persists the exec ID and start intent before external actions, inspects at most
+once per cycle, and never replaces an active or uninspectable exec. If the
+container is replaced and its saved exec ID cannot be inspected, all repos
+remain blocked for operator recovery; elapsed time does not authorize replay.
+
+The accepted revision race remains: `/workspace` is a separate checkout from
+the temporary build clone and may have advanced after the pushed revision. No
+snapshot transfer or synchronization is added. A production graph update is
+not safe until `/workspace` is frozen, all Graphify writers are excluded, a
+verified archive and rollback are ready, and graph parse/readback/baseline
+checks can be performed. The shared lock is not a substitute for these
+maintenance safeguards.

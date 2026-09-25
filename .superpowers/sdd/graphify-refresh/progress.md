@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Progress Ledger
 
-Status: **All three user checkpoints and Critic approvals recorded; implementation gate open.** Engineer implementation is in progress; production Graphify mutation remains gated by the live-acceptance safeguards.
+Status: **All three checkpoints confirmed; implementation gate open; local implementation and verification complete.** Live Graphify acceptance remains gated by the approved maintenance, backup, comparison, and rollback safeguards.
 
 ## SpecDD artifacts
 
@@ -39,4 +39,4 @@ Status: **All three user checkpoints and Critic approvals recorded; implementati
 
 ## Implementation
 
-Gate open. `GraphifyRefreshImpl` engineer dispatched for implementation. No production Graphify update or deployment has been performed.
+Implemented in `app.py` and `graphify_refresh.py`; `.env.template` and root `design.md` document the request timeout and operational contract. `python3 test_app.py` passes. Throwaway local fake Docker Engine TCP lifecycle and Unix-socket API-version smokes passed. No production Graphify update, deployment, or restart was performed. Live acceptance requires frozen `/workspace`, exclusive writer coordination, verified archive/rollback, graph parse/readback, and unaffected-repo baseline comparison.

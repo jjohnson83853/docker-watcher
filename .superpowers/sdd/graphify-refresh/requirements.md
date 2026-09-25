@@ -1,6 +1,6 @@
 # docker-watcher Graphify Refresh — Requirements
 
-Status: **confirmed by user.** The original requirements were confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 were separately confirmed in this conversation after Critic APPROVE. All three SpecDD checkpoints are confirmed; implementation still requires `.superpowers/sdd/GATE_OPEN`.
+Status: **Confirmed by user.** The original requirements were confirmed (“continue”, 2026-10-05); revised FR-9/FR-10 were separately confirmed after Critic APPROVE. All three SpecDD checkpoints and Critic approvals are recorded; `.superpowers/sdd/GATE_OPEN` is committed. Local implementation is complete; live acceptance remains gated.
 
 ## 1. Goal
 

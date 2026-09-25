@@ -125,10 +125,10 @@ def _run_docker(cmd, timeout):
         raise BuildError("timeout", (e.stdout or "") + (e.stderr or "")) from e
 
 
-def build_and_push(clone_url, branch, token, registry, image, timeout):
-    """Clone, strip .git (ADR-4), build and push. Returns the SHA actually
-    checked out (git rev-parse HEAD), which is what gets tagged and stored
-    (FR-9) - never the pre-clone SHA from the API."""
+def build_and_push(clone_url, branch, token, registry, image, timeout,
+                   on_built=None):
+    """Clone, strip .git, build, then push both tags. Returns the checked-out
+    SHA. `on_built` runs after build success and before either tag push."""
     tmpdir = tempfile.mkdtemp()
     try:
         auth_url = clone_url.replace("https://", f"https://x-access-token:{token}@")
@@ -145,31 +145,18 @@ def build_and_push(clone_url, branch, token, registry, image, timeout):
             capture_output=True,
             text=True,
         ).stdout.strip()
-        # NFR-1: .git/config holds the tokenized clone URL; it must never be
-        # part of the build context.
         shutil.rmtree(os.path.join(tmpdir, ".git"), ignore_errors=True)
 
         tags = [f"{registry}/{image}:latest", f"{registry}/{image}:{sha[:7]}"]
         build_cmd = ["docker", "build"]
         for tag in tags:
             build_cmd += ["-t", tag]
-        # NFR-1: the token must never reach the build. --build-arg is not a
-        # secret channel - with the classic builder (DOCKER_BUILDKIT=0, ADR-2)
-        # its value is recorded in image layer history on the daemon for any
-        # stage where the ARG is in scope, and the registry is anonymously
-        # readable, so a Dockerfile that consumes it in its *final* stage
-        # would leak the PAT straight to a pullable image. The secure
-        # alternative (--secret id=...,env=...) needs BuildKit, which this
-        # deployment cannot run (no buildx plugin, socket-proxy GRPC=0).
-        # reolink-mcp's Dockerfile does declare `ARG GITHUB_TOKEN`, but only
-        # in a discarded intermediate stage, so it never reached a pushed
-        # image - it was still exposed in build argv and in that
-        # intermediate image's layer history on docker-lxc while this line
-        # was live. If a repo ever needs a build-time credential, that is a
-        # design change (a working BuildKit path first), not another
-        # --build-arg.
+        # The token must never reach a build context or layer history. BuildKit
+        # secrets are unavailable through this deployment's Docker endpoint.
         build_cmd.append(tmpdir)
         _run_docker(build_cmd, timeout)
+        if on_built is not None:
+            on_built(sha)
         for tag in tags:
             _run_docker(["docker", "push", tag], timeout)
         return sha
@@ -198,21 +185,20 @@ def save_state(path, state):
         raise
 
 
-def run_once(username, token, branch, registry, state_path, build_timeout=1800):
+def graphify_refresh_persist_failure():
+    log("error", "graphify_refresh", outcome="persist_failure",
+        not_persisted=True)
+
+
+def run_once(username, token, branch, registry, state_path, build_timeout=1800,
+             graphify=None):
     state = load_state(state_path)
     for repo in list_owner_repos(username, token):
         name = repo["name"]
-        # EF-16: owned repos don't agree on a default branch (some master, some
-        # main). A single global BRANCH silently skips every repo it doesn't
-        # name, including this repo itself (FR-13 self-build). Unset BRANCH (the
-        # default) follows each repo's own actual default branch, whatever that
-        # is; setting it still forces one branch everywhere.
         repo_branch = branch or repo.get("default_branch") or "main"
         try:
             old_sha, old_pushed_at = state_entry(state, name)
             pushed_at = repo.get("pushed_at")
-            # ADR-7: skip the per-repo Dockerfile/commit lookups entirely
-            # when nothing has moved since last cycle.
             if pushed_at and pushed_at == old_pushed_at:
                 continue
             if not has_dockerfile(username, name, repo_branch, token):
@@ -223,59 +209,71 @@ def run_once(username, token, branch, registry, state_path, build_timeout=1800):
             image = image_name(repo["full_name"], username)
             log("info", "build_started", repo=repo["full_name"], branch=repo_branch,
                 sha=sha[:7], image=f"{registry}/{image}")
+
+            def on_built(built_sha):
+                prior = state.get(name)
+                original = prior.copy() if isinstance(prior, dict) else prior
+                try:
+                    from graphify_refresh import record_target, target
+                    generation = int(target(state, name) or 0) + 1
+                    record_target(state, name, generation)
+                    save_state(state_path, state)
+                except Exception:
+                    if original is None:
+                        state.pop(name, None)
+                    else:
+                        state[name] = original
+                    graphify_refresh_persist_failure()
+
             built_sha = build_and_push(
-                repo["clone_url"], repo_branch, token, registry, image, build_timeout
-            )
-            state[name] = {"sha": built_sha, "pushed_at": pushed_at}
-            save_state(state_path, state)  # FR-10: only after a successful push
+                repo["clone_url"], repo_branch, token, registry, image, build_timeout,
+                on_built=on_built)
+            entry = dict(state.get(name)) if isinstance(state.get(name), dict) else {}
+            entry.update({"sha": built_sha, "pushed_at": pushed_at})
+            state[name] = entry
+            save_state(state_path, state)
             log("info", "build_success", repo=repo["full_name"], branch=repo_branch,
                 sha=built_sha[:7], image=f"{registry}/{image}")
         except BuildError as e:
-            # ADR-5 does not apply here: docker build/push output has no
-            # token in it, so the captured tail is safe to log in full.
-            # alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 exit_code=e.returncode, output_tail=e.output[-MAX_BUILD_OUTPUT_CHARS:])
         except subprocess.CalledProcessError as e:
-            # ADR-5/NFR-2: never render argv (it contains the tokenized clone
-            # URL) - log repo name and returncode only.
-            # alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 exit_code=e.returncode)
         except subprocess.TimeoutExpired:
-            # NFR-6: a hung build is a failed build and must alert too.
-            # alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 exit_code="timeout")
         except Exception as e:
-            # ADR-6: broadened from CalledProcessError-only so one repo's
-            # failure (e.g. a URLError from a flaky API call) can't end the
-            # cycle. alerts/build-failed.yaml matches on the "build failed" substring.
             log("error", "build failed", repo=repo["full_name"], branch=repo_branch,
                 error_type=type(e).__name__)
+    if graphify is not None:
+        try:
+            graphify.tick(state)
+        except Exception:
+            graphify_refresh_persist_failure()
+
 
 
 def main():
     username = os.environ["GITHUB_USERNAME"]
     token = os.environ["GITHUB_TOKEN"]
-    # Empty/unset means "each repo's own default branch" (EF-16) - a set value
-    # is an override that forces the same branch for every repo.
     branch = os.environ.get("BRANCH") or None
     registry = os.environ.get("REGISTRY_URL", "registry.localdomain:5000")
     state_path = os.environ.get("STATE_FILE", "/data/state.json")
     interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
     build_timeout = int(os.environ.get("BUILD_TIMEOUT_SECONDS", "1800"))
     heartbeat_path = os.environ.get("HEARTBEAT_FILE", "/data/heartbeat")
+    from graphify_refresh import build_from_env
+    graphify = build_from_env(
+        os.environ, save=lambda current: save_state(state_path, current))
 
     while True:
         try:
-            run_once(username, token, branch, registry, state_path, build_timeout)
+            run_once(username, token, branch, registry, state_path, build_timeout,
+                     graphify=graphify)
         except Exception as e:
             log("error", "poll_cycle_failed", error_type=type(e).__name__)
         finally:
-            # Written every cycle regardless of outcome - the healthcheck in
-            # docker-compose.yml only needs proof the loop is still turning,
-            # not that a build succeeded.
             with open(heartbeat_path, "w"):
                 pass
         time.sleep(interval)
