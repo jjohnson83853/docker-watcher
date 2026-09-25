@@ -263,9 +263,15 @@ def main():
     interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
     build_timeout = int(os.environ.get("BUILD_TIMEOUT_SECONDS", "1800"))
     heartbeat_path = os.environ.get("HEARTBEAT_FILE", "/data/heartbeat")
-    from graphify_refresh import build_from_env
-    graphify = build_from_env(
-        os.environ, save=lambda current: save_state(state_path, current))
+    try:
+        from graphify_refresh import build_from_env
+    except ImportError:
+        log("warn", "graphify_refresh_module_unavailable")
+        build_from_env = None
+    graphify = (build_from_env(
+        os.environ,
+        save=lambda current: save_state(state_path, current))
+        if build_from_env else None)
 
     while True:
         try:
