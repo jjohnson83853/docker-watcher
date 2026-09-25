@@ -5,10 +5,11 @@ Status: **draft — awaiting user requirements checkpoint.** Read `requirements.
 ## 1. Resolve deployed contract (after requirements checkpoint; before design/tasks checkpoints)
 
 - Inspect Graphify's deployed interface, documentation, auth, repo/workspace mapping, mount scope/currentness, refresh semantics, job-status observability, ambiguity reconciliation/identification, network reachability, and timeout constraints.
-- Record evidence and select the synchronous, observable-async, or unobservable-async branch in `design.md`. Determine whether an accepted async operation can be reconciled after an ambiguous timeout. If not, leave automatic resubmission blocked and present the no-overlap/retry tradeoff for an explicit user decision.
+- Record evidence and select the synchronous, observable-async, or unobservable-async branch in `design.md`. If accepted acknowledgments have no status API, present the explicit tradeoff: block later submissions indefinitely unless status is safely resolved, or permit successive requests that may overlap. Obtain the user's decision before selecting the latter branch.
 - Submit material design/tasks changes from discovery to Critic again and obtain renewed user confirmations before implementation.
 
-**Acceptance:** Design identifies a verified request and source mapping, accurately states success/ambiguity behavior, and records the accepted post-push/pre-build workspace race. If the contract cannot be verified, implementation remains blocked.
+**Acceptance:** Design identifies a verified request and source mapping, accurately states success/ambiguity behavior, and records the accepted post-push/pre-build workspace race. An accepted-only async branch cannot be selected without explicit approval of the overlap tradeoff. If the contract cannot be verified, implementation remains blocked.
+
 
 ## 2. Persist refresh lifecycle independently from image publication
 
@@ -28,7 +29,7 @@ Status: **draft — awaiting user requirements checkpoint.** Read `requirements.
 - Retry poll errors on the next normal watcher cycle without submitting another job. Retain nonterminal jobs indefinitely, at most one poll per repo/cycle, without inventing a timeout or overlapping a replacement.
 - Implement verified synchronous, observable-async, and/or accepted-only semantics without claiming indexing completion beyond available evidence. Isolate invocation, decoding, polling, and persistence errors per repo.
 
-**Acceptance:** Deterministic clock/client scenarios prove timing, restart persistence, coalescing, no overlap, poll bounds, terminal behavior, ambiguity handling, and persistence-failure suppression. Include unresolved generation A followed by successful build B with no invocation; include crash-after-send, restart, elapsed deadline, and no replay when acceptance cannot be reconciled.
+**Acceptance:** Deterministic clock/client scenarios prove timing, restart persistence, coalescing, no overlap, poll bounds, terminal behavior, ambiguity handling, and persistence-failure suppression. Include generation A invocation timing out with possible async acceptance and no reconciliation, followed by successful generation B durably coalesced with no B invocation; include crash-after-send, restart, elapsed deadline, and no replay when acceptance cannot be reconciled.
 
 ## 4. Add safe events, configuration, and operational documentation
 
