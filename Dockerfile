@@ -8,7 +8,7 @@ FROM python:3.12-alpine
 # `POST /build?version=2`, selected at runtime via DOCKER_BUILDKIT in .env,
 # not baked into the image (ADR-2). buildx's docker-container driver needs
 # an HTTP Upgrade the socket-proxy's GRPC=0 ACL rejects (design.md EF-2).
-RUN apk add --no-cache docker-cli=29.5.3-r0 git
+RUN apk add --no-cache docker-cli=29.5.3-r1 git
 
 WORKDIR /app
 COPY app.py .
