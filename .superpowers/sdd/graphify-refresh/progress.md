@@ -5,8 +5,8 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 ## SpecDD artifacts
 
 - Requirements: `requirements.md` — user-confirmed (“continue”, 2026-10-05).
-- Design: `design.md` — draft; user confirmation pending.
-- Tasks: `tasks.md` — draft; user confirmation pending.
+- Design: `design.md` — blocked; deployed Graphify contract unavailable; user confirmation pending.
+- Tasks: `tasks.md` — draft; contract discovery blocked; user confirmation pending.
 
 ## Critic reviews
 
@@ -19,6 +19,14 @@ Status: **SpecDD draft; implementation gate closed.** The presence of this works
 - Fourth review: Critic returned **REVISE** because the accepted-only task acceptance text contradicted the offered safe blocked option.
 - Amendment applied: the accepted-only checkpoint accepts either retaining the blocked unresolved state or explicitly approving possible overlap.
 - Final re-review of amended first draft: **APPROVE**; no further amendment required. Critic confirms the requirements checkpoint is ready.
+
+## Deployed contract discovery
+
+- Attempted after requirements confirmation, before final design/tasks checkpoints.
+- Outcome: blocked. Available MCP access did not expose a Graphify/infrastructure resource catalog; `read mcp://` requires a resource URI, and no URI was available. No local `graphify-out/` files or Graphify endpoint/config were found in watcher deployment files.
+- Unverified: invocation/auth, workspace mapping/currentness, completion semantics, job status/reconciliation, watcher reachability, and Graphify timeout.
+- No production refresh/connectivity probe was made because no endpoint or safe runtime query path was available. Required prerequisite: accessible deployed Graphify API/discovery resource plus read-only mount and watcher-network inspection.
+- Design and tasks checkpoints remain blocked; do not infer a contract or dispatch implementation until discovery is complete.
 
 ## User checkpoints
 

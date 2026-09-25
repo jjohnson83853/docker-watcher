@@ -1,10 +1,16 @@
 # docker-watcher Graphify Refresh — Design
 
-Status: **draft — awaiting requirements checkpoint.** Implements `requirements.md`; this design does not authorize implementation.
+Status: **blocked — deployed Graphify contract unavailable.** Requirements confirmed; design cannot be finalized or approved until the contract fields below are verified. This document does not authorize implementation.
 
 ## 1. Contract discovery gate
 
-No Graphify endpoint, command, auth scheme, workspace identifier, or completion behavior is assumed. After the user confirms requirements, perform this read-only contract discovery before presenting final design/tasks checkpoints: establish (1) the refresh request and auth; (2) how each watched repo maps to the workspace Graphify already mounts; (3) whether that mount follows the current working tree; (4) whether refresh is synchronous or returns an accepted job; (5) whether job lookup exposes terminal status and ambiguous submissions can be reconciled/identified; and (6) network and timeout constraints. Record evidence and the selected outcome branch here. Material changes to design/tasks after discovery require fresh Critic review and user confirmation of those checkpoints. If an interface or mount cannot be verified, stop before implementation and report the missing prerequisite rather than inventing a request.
+No Graphify endpoint, command, auth scheme, workspace identifier, or completion behavior is assumed. After requirements confirmation, read-only discovery was attempted before final design/tasks checkpoints. Establish (1) the refresh request and auth; (2) how each watched repo maps to the workspace Graphify already mounts; (3) whether that mount follows the current working tree; (4) whether refresh is synchronous or returns an accepted job; (5) whether job lookup exposes terminal status and ambiguous submissions can be reconciled/identified; and (6) network and timeout constraints. Record evidence and select the outcome branch here. Material changes to design/tasks after discovery require fresh Critic review and renewed user confirmation.
+
+### Discovery result — blocked
+
+The available tool surface provided filesystem/web reads but no Graphify or infrastructure MCP query operation. `read mcp://` could not enumerate resources because no resource URI/catalog was available; the local `graphify-out/` search found no files. The watcher deployment files confirm only that `docker-compose.yml` defines `docker-watcher` with `watcher-state:/data`, while `.env.template` contains GitHub, Docker, registry, and polling settings; they contain no Graphify endpoint, auth, mount, or mapping. `.omp/plans/open-questions.md` also records these contract fields as unresolved.
+
+Therefore invocation/auth, workspace mapping and currentness, sync/async semantics, status/reconciliation, watcher reachability, and Graphify timeout remain **unverified**. No production refresh or connectivity probe was made because no service identifier/endpoint or safe runtime query path was available. Required prerequisite: provide an accessible deployed Graphify discovery/API resource and read-only access to its mount and watcher network context. Do not finalize this design, infer an integration, or claim end-to-end acceptance until then.
 
 The source is Graphify's existing mounted workspace, never the temporary clone used by docker-watcher. The user accepts that edits after a Git push and before build completion may be indexed instead of the pushed revision. Do not add revision snapshots, clone transfer, workspace synchronization, or pinning for this race.
 
