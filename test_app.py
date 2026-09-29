@@ -841,6 +841,26 @@ def test_exec_id_persistence_failure_suppresses_start():
     assert len(client.creates) == 1
     assert client.starts == []
 
+def test_graphify_failure_logs_numeric_exit_code():
+    from contextlib import redirect_stdout
+    from io import StringIO
+    import graphify_refresh as refresh
+
+    client, clock = _RefreshClient(), _RefreshClock()
+    client.inspect_results.append((False, 7))
+    state = {}
+    refresh.record_target(state, "repo-a", 1)
+    controller = refresh.GraphifyRefresh(client, now=clock, save=lambda _: True)
+    output = StringIO()
+    with redirect_stdout(output):
+        controller.tick(state)
+        controller.tick(state)
+
+    event = json.loads(output.getvalue().splitlines()[-1])
+    assert event["outcome"] == "exec_failed"
+    assert event["exit_code"] == 7
+
+
 
 if __name__ == "__main__":
     test_image_name()
@@ -874,4 +894,5 @@ if __name__ == "__main__":
     test_definite_start_rejection_persists_failure_deadline()
     test_ambiguous_start_is_inspected_without_replay()
     test_exec_id_persistence_failure_suppresses_start()
+    test_graphify_failure_logs_numeric_exit_code()
     print("ok")
