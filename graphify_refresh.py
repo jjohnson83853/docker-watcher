@@ -86,7 +86,7 @@ def log(level, outcome, **fields):
         elif key == "retry_delay" and type(value) is int:
             record[key] = max(0, min(value, RETRY_CAP_SECONDS))
         elif key == "exit_code":
-            record[key] = safe_status(value) if type(value) is int else "unknown"
+            record[key] = safe_exit_code(value)
     print(json.dumps(record), flush=True)
 
 
@@ -109,6 +109,12 @@ def safe_status(status):
     """Docker Engine HTTP status: an integer from 100-599 or `unknown`."""
     if isinstance(status, int) and 100 <= status <= 599:
         return status
+    return "unknown"
+
+def safe_exit_code(exit_code):
+    """Docker exec process exit status: an integer from 0-255 or `unknown`."""
+    if type(exit_code) is int and 0 <= exit_code <= 255:
+        return exit_code
     return "unknown"
 
 
@@ -618,9 +624,7 @@ class GraphifyRefresh:
         affected = dirty_repos(state) or list(snapshot)
         self._set_attempt(state, None)
         self._record_failure(state, affected, now)
-        log("error", EXEC_FAILED,
-            exit_code=safe_status(exit_code) if isinstance(exit_code, int)
-            else "unknown",
+        log("error", EXEC_FAILED, exit_code=exit_code,
             repos=[safe_repo(r) for r in sorted(affected)])
         if not self.save(state):
             log("error", PERSIST_FAILURE, not_persisted=True)
