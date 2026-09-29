@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .omc/
 .omp/
+
+# Coverage output
+.coverage
+htmlcov/
