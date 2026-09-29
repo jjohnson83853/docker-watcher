@@ -211,6 +211,21 @@ def test_refresh_happy_path_persists_before_start_and_acknowledges():
     assert graph._attempt(state) is None
     assert len(saved) == 6
 
+def test_refresh_uses_atomic_state_save_as_success(tmp_path):
+    state_path = tmp_path / "state.json"
+    client = _RefreshClient()
+    graph = refresh.GraphifyRefresh(
+        client,
+        now=lambda: 100,
+        save=lambda state: app.save_state(str(state_path), state),
+    )
+    state = {"repo": {"target": 1}}
+
+    graph.tick(state)
+
+    assert client.calls == ["container", ("create", "a" * 12), ("start", "b" * 12)]
+    saved = app.load_state(state_path)
+    assert saved[refresh.RESERVED_KEY]["attempt"]["start_requested"] is True
 
 def test_refresh_creation_failure_schedules_retry_without_external_start(capsys):
     client = _RefreshClient(create_error=refresh.DockerAPIError(503))

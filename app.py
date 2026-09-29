@@ -172,7 +172,7 @@ def load_state(path):
 
 
 def save_state(path, state):
-    """Atomic write (NFR-7): temp file in the same directory, then os.replace."""
+    """Atomically persist state and report success to transition guards."""
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=d)
@@ -183,6 +183,7 @@ def save_state(path, state):
     except Exception:
         os.unlink(tmp_path)
         raise
+    return True
 
 
 def graphify_refresh_persist_failure():

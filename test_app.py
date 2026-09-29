@@ -39,8 +39,7 @@ def test_save_state_is_atomic_on_crash():
     # E-7: an interruption between write and replace must leave the previous
     # state file intact and parseable, not truncated.
     path = tempfile.mkstemp()[1]
-    app.save_state(path, {"a": "1"})
-
+    assert app.save_state(path, {"a": "1"}) is True
     orig_replace = app.os.replace
 
     def boom(*a, **k):
