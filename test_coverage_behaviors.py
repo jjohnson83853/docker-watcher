@@ -98,7 +98,6 @@ def test_docker_client_exec_contract_and_invalid_responses(monkeypatch):
         _Response(200, b'{"ApiVersion":"1.43"}'),
         _Response(200, b'{"Id":"abcdef123456"}'),
         _Response(200, b'{"Id":"fedcba654321"}'),
-        _Response(200, b""),
         _Response(200, b'{"Running":true,"ExitCode":null}'),
         _Response(200, b'{"Running":false,"ExitCode":0}'),
         _Response(200, b'{"Id":"bad"}'),
@@ -117,14 +116,12 @@ def test_docker_client_exec_contract_and_invalid_responses(monkeypatch):
     client = refresh.DockerClient("tcp://docker:2375")
     container_id = client.container_id()
     exec_id = client.exec_create(container_id)
-    client.exec_start(exec_id)
     assert client.exec_inspect(exec_id) == (True, None)
     assert client.exec_inspect(exec_id) == (False, 0)
     assert json.loads(calls[2].requests[0][2]) == {
-        "AttachStdin": False, "AttachStdout": False, "AttachStderr": False,
+        "AttachStdin": False, "AttachStdout": True, "AttachStderr": True,
         "Tty": False, "Cmd": refresh.GRAPHIFY_ARGV, "Env": refresh.GRAPHIFY_ENV,
     }
-    assert json.loads(calls[3].requests[0][2]) == {"Detach": True, "Tty": False}
     with pytest.raises(refresh.DockerAPIError):
         client.container_id()
     with pytest.raises(refresh.DockerAPIError):
@@ -183,10 +180,16 @@ class _RefreshClient:
             raise self.create_error
         return "b" * 12
 
-    def exec_start(self, eid):
+    def exec_start(self, eid, on_status, cancel, transport):
         self.calls.append(("start", eid))
         if self.start_error:
+            if isinstance(self.start_error, refresh.DockerAPIError):
+                on_status(("rejected", self.start_error.status))
+            else:
+                on_status(("transport_error", None))
             raise self.start_error
+        on_status(("started", None))
+        return _EmptyBody()
 
     def exec_inspect(self, eid):
         self.calls.append(("inspect", eid))
@@ -195,26 +198,86 @@ class _RefreshClient:
         return self.inspect_result
 
 
+class _EmptyBody:
+    def read(self, _size, _cancel):
+        return b""
+
+    def close(self):
+        pass
+
+
+class _AttachedTransport:
+    def cancel(self):
+        pass
+
+
+class _CaptureWorker:
+    def __init__(self, start, cancel_callback=None):
+        self._start = start
+        self._status = ("pending", None)
+        self._alive = False
+
+    def start(self):
+        self._alive = True
+        try:
+            self._body = self._start(self._publish, _NeverCancel())
+        except Exception:
+            pass
+        self._alive = False
+
+    def _publish(self, status):
+        self._status = status
+
+    def status(self):
+        return self._status
+
+    def result(self):
+        return "unavailable"
+
+    def is_alive(self):
+        return self._alive
+
+    def cancel(self):
+        body = getattr(self, "_body", None)
+        if body is not None:
+            body.close()
+
+
+class _NeverCancel:
+    def is_set(self):
+        return False
+
+
+def _controller(client, **kwargs):
+    return refresh.GraphifyRefresh(
+        client,
+        capture_worker_factory=_CaptureWorker,
+        attached_exec_factory=lambda _client: _AttachedTransport(),
+        **kwargs,
+    )
+
+
 def test_refresh_happy_path_persists_before_start_and_acknowledges():
     saved = []
     client = _RefreshClient()
-    graph = refresh.GraphifyRefresh(client, now=lambda: 100, save=lambda state: saved.append(json.loads(json.dumps(state))) or True)
+    graph = _controller(client, now=lambda: 100, save=lambda state: saved.append(json.loads(json.dumps(state))) or True)
     state = {"repo": {"target": 3, "completed": 2}}
     graph.tick(state)
     assert client.calls == ["container", ("create", "a" * 12), ("start", "b" * 12)]
-    assert len(saved) == 4
+    assert len(saved) == 3
     assert saved[0][refresh.RESERVED_KEY]["attempt"]["phase"] == "pre_create"
     assert saved[1][refresh.RESERVED_KEY]["attempt"]["phase"] == "pre_start"
+    assert saved[2][refresh.RESERVED_KEY]["attempt"]["start_requested"] is True
     graph.tick(state)
     assert client.calls[-1] == ("inspect", "b" * 12)
     assert state["repo"]["completed"] == 3
     assert graph._attempt(state) is None
-    assert len(saved) == 6
+    assert len(saved) == 5
 
 def test_refresh_uses_atomic_state_save_as_success(tmp_path):
     state_path = tmp_path / "state.json"
     client = _RefreshClient()
-    graph = refresh.GraphifyRefresh(
+    graph = _controller(
         client,
         now=lambda: 100,
         save=lambda state: app.save_state(str(state_path), state),
@@ -229,7 +292,7 @@ def test_refresh_uses_atomic_state_save_as_success(tmp_path):
 
 def test_refresh_creation_failure_schedules_retry_without_external_start(capsys):
     client = _RefreshClient(create_error=refresh.DockerAPIError(503))
-    graph = refresh.GraphifyRefresh(client, now=lambda: 50)
+    graph = _controller(client, now=lambda: 50)
     state = {"repo": {"target": 1}}
     graph.tick(state)
     assert client.calls == ["container", ("create", "a" * 12)]
@@ -239,28 +302,32 @@ def test_refresh_creation_failure_schedules_retry_without_external_start(capsys)
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["outcome"] == "retry_scheduled"
 
 
-def test_refresh_start_rejection_observes_terminal_failure_and_recovers(capsys):
-    client = _RefreshClient(inspect_result=(False, 7), start_error=refresh.DockerAPIError(400))
-    graph = refresh.GraphifyRefresh(client, now=lambda: 100)
+def test_refresh_start_rejection_recovers_immediately_on_nullable_inspect(capsys):
+    client = _RefreshClient(
+        inspect_result=(False, None), start_error=refresh.DockerAPIError(400))
+    graph = _controller(client, now=lambda: 100)
     state = {"repo": {"target": 9}}
+    graph.tick(state)
     graph.tick(state)
     assert state["repo"]["failures"] == 1
     assert state["repo"]["retry_due"] == 160
     assert graph._attempt(state) is None
     assert client.calls[-1] == ("inspect", "b" * 12)
-    assert any(json.loads(line)["outcome"] == "exec_failed" for line in capsys.readouterr().out.splitlines())
+    outcomes = [json.loads(line)["outcome"] for line in capsys.readouterr().out.splitlines()]
+    assert refresh.RETRY_SCHEDULED in outcomes
+    assert refresh.EXEC_FAILED not in outcomes
 
 
 def test_refresh_unsaved_attempt_suppresses_create_and_unknown_inspection_blocks():
     client = _RefreshClient()
-    graph = refresh.GraphifyRefresh(client, now=lambda: 100, save=lambda _state: False)
+    graph = _controller(client, now=lambda: 100, save=lambda _state: False)
     state = {"repo": {"target": 1}}
     graph.tick(state)
     assert client.calls == []
     assert graph._attempt(state) is None
 
     client = _RefreshClient(inspect_result=refresh.DockerUnreachable())
-    graph = refresh.GraphifyRefresh(client, now=lambda: 100)
+    graph = _controller(client, now=lambda: 100)
     state = {"repo": {"target": 1}, refresh.RESERVED_KEY: {"attempt": {
         "exec_id": "b" * 12, "start_requested": True,
         "fallback_deadline": 0, "snapshot": {"repo": 1},
@@ -332,7 +399,7 @@ def test_build_failure_and_environment_poll_cycle(monkeypatch, tmp_path, capsys)
     assert heartbeat.exists()
 def test_refresh_running_exec_waits_and_rejected_duplicate_start_is_inspected(capsys):
     client = _RefreshClient(inspect_result=(True, None))
-    graph = refresh.GraphifyRefresh(client, now=lambda: 100)
+    graph = _controller(client, now=lambda: 100)
     state = {"repo": {"target": 1}, refresh.RESERVED_KEY: {"attempt": {
         "exec_id": "b" * 12, "start_requested": True,
         "fallback_deadline": 0, "snapshot": {"repo": 1},
@@ -343,11 +410,12 @@ def test_refresh_running_exec_waits_and_rejected_duplicate_start_is_inspected(ca
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["outcome"] == "exec_running"
 
     client = _RefreshClient(inspect_result=(False, 0), start_error=refresh.DockerAPIError(409))
-    graph = refresh.GraphifyRefresh(client, now=lambda: 100)
+    graph = _controller(client, now=lambda: 100)
     state = {"repo": {"target": 2}, refresh.RESERVED_KEY: {"attempt": {
         "exec_id": "b" * 12, "container_id": "a" * 12,
         "start_requested": False, "fallback_deadline": 0, "snapshot": {"repo": 2},
     }}}
+    graph.tick(state)
     graph.tick(state)
     assert state["repo"]["completed"] == 2
     assert graph._attempt(state) is None

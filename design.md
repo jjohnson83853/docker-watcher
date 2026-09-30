@@ -314,10 +314,24 @@ catch. Named here so it is a known gap rather than an assumed capability.
 The watcher uses its configured `DOCKER_HOST` to negotiate the Docker Engine API
 version and execute the fixed `graphify update /workspace` command in the exact
 `graphify-mcp` container, with `GRAPHIFY_OUT=/data`. This is code-only indexing
-of the Graphify container's existing `/workspace` mount into the shared
-`/data/graph.json`; it does not update docs, papers, or images. No additional
-mount, Graphify HTTP route, or Graphify credential is used. Each Engine request
-is bounded by `GRAPHIFY_DOCKER_REQUEST_TIMEOUT_SECONDS` (default 10 seconds).
+of Graphify's existing `/workspace` mount into the shared `/data/graph.json`;
+it does not update docs, papers, or images. No additional mount, Graphify HTTP
+route, or Graphify credential is used.
+
+Exec creation requests attached stdout/stderr with `Tty=false`; a dedicated
+worker starts the exec attached and classifies only the approved stderr
+signatures: `workspace_path_missing` and `graphify_rebuild_failed`. These are
+observed signatures, not verified causes. Terminal nonzero events may also
+report `unclassified` or `unavailable`. Raw output, exception text, credentials,
+and paths never enter watcher logs or durable state.
+
+The capture worker preserves `DOCKER_HOST`, including
+`tcp://docker-lxc.localdomain:2375`. Hostname resolution runs in a bounded
+helper process; resolution, connect, request send, and complete response
+headers share the configured `GRAPHIFY_DOCKER_REQUEST_TIMEOUT_SECONDS` deadline
+(default 10 seconds). Stream reads remain retryable while ExecInspect reports
+running; this is not an overall Graphify-command timeout. Capture is bounded
+and continues draining after its scan cap.
 
 There is one workspace-wide exec at a time because every run scans the aggregate
 workspace and writes one graph. Graphify 0.9.67's shared `/data/.rebuild.lock`
@@ -331,9 +345,12 @@ marks every dirty repo failed because Graphify supplies no per-file result.
 ExecInspect `Running=true` means keep polling; a non-null `ExitCode` is terminal
 (zero succeeds); `Running=false, ExitCode=null` means not started. The watcher
 persists the exec ID and start intent before external actions, inspects at most
-once per cycle, and never replaces an active or uninspectable exec. If the
-container is replaced and its saved exec ID cannot be inspected, all repos
-remain blocked for operator recovery; elapsed time does not authorize replay.
+once per cycle, and never replaces an active or uninspectable exec. Terminal
+inspection cancels any active capture worker; an in-memory guard prevents a
+second exec until that worker exits, without blocking builds or pushes. A
+recovered running or terminal exec is never reattached. If the container is
+replaced and its saved exec ID cannot be inspected, all repos remain blocked
+for operator recovery; elapsed time does not authorize replay.
 
 The accepted revision race remains: `/workspace` is a separate checkout from
 the temporary build clone and may have advanced after the pushed revision. No

@@ -1,33 +1,16 @@
 """Graphify workspace refresh for docker-watcher.
 
-After a successful image build the watcher persists a durable per-repository
-target generation (the built SHA) and drives ONE globally serialized detached
-Docker Engine exec in the fixed `graphify-mcp` container running the fixed
-argv `graphify update /workspace` with `GRAPHIFY_OUT=/data`.
-
-Verified deployment contract (`.superpowers/sdd/graphify-refresh/design.md`):
-- Route: the watcher's existing DOCKER_HOST (socket-proxy), Engine API
-  negotiated via bounded GET /version; TCP and unix:// endpoints supported.
-- Lifecycle: exec create -> persist exec ID -> persist start_requested ->
-  detached start (Detach=true, Tty=false) -> ExecInspect with a nullable
-  ExitCode (never coerced to zero).
-- Recovery matrix: Running=true -> retain/poll; non-null ExitCode -> terminal
-  (0 success, nonzero failure); Running=false, ExitCode=null -> not started,
-  the saved exec may be started again only after a persisted deadline;
-  missing/uninspectable ID or a replaced Graphify container stays unresolved
-  and blocks all repositories until the same ID resolves.
-- Serialization: at most one watcher-owned exec may be active or unresolved
-  globally; it counts as in-flight for every repository. Graphify's shared
-  /data/.rebuild.lock is additional defense only.
-
-Retry clocks are per repository: initial 60 seconds, doubled per observed
-failure, capped at 30 minutes. Coalesced builds never reset a clock.
+The controller persists a single Graphify exec and delegates its attached
+stdout/stderr stream to a dedicated, non-blocking capture worker.
 """
+from copy import deepcopy
 import http.client
 import json
 import re
 import socket
 import time
+
+from graphify_stream import AttachedExec, CaptureWorker
 
 GRAPHIFY_CONTAINER = "graphify-mcp"
 GRAPHIFY_ARGV = ["graphify", "update", "/workspace"]
@@ -48,11 +31,14 @@ EXEC_SUCCEEDED = "exec_succeeded"
 EXEC_INSPECT_ERROR = "exec_inspect_error"
 UNRESOLVED_EXEC = "unresolved_exec"
 PERSIST_FAILURE = "persist_failure"
-EXEC_STARTED = "exec_started"
 RETRY_SCHEDULED = "retry_scheduled"
+DIAGNOSTIC_CLASSES = frozenset({
+    "workspace_path_missing", "graphify_rebuild_failed", "unclassified",
+    "unavailable",
+})
 _OUTCOMES = {EXEC_CREATE_ERROR, EXEC_START_UNCONFIRMED, EXEC_RUNNING,
              EXEC_FAILED, EXEC_SUCCEEDED, EXEC_INSPECT_ERROR,
-             UNRESOLVED_EXEC, PERSIST_FAILURE, EXEC_STARTED, RETRY_SCHEDULED}
+             UNRESOLVED_EXEC, PERSIST_FAILURE, RETRY_SCHEDULED}
 _ERROR_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -85,6 +71,11 @@ def log(level, outcome, **fields):
             record[key] = value
         elif key == "retry_delay" and type(value) is int:
             record[key] = max(0, min(value, RETRY_CAP_SECONDS))
+        elif key == "diagnostic_class":
+            exit_code = fields.get("exit_code")
+            if (outcome == EXEC_FAILED and type(exit_code) is int
+                    and exit_code != 0 and value in DIAGNOSTIC_CLASSES):
+                record[key] = value
         elif key == "exit_code":
             record[key] = safe_exit_code(value)
     print(json.dumps(record), flush=True)
@@ -229,7 +220,7 @@ class DockerClient:
         return cid
     def exec_create(self, container_id):
         body = {
-            "AttachStdin": False, "AttachStdout": False, "AttachStderr": False,
+            "AttachStdin": False, "AttachStdout": True, "AttachStderr": True,
             "Tty": False, "Cmd": self.argv, "Env": self.env,
         }
         status, data = self.request(
@@ -239,10 +230,10 @@ class DockerClient:
             raise DockerAPIError(status)
         return eid
 
-    def exec_start(self, exec_id):
-        # Detached start: Engine returns 200 with an empty body.
-        self.request("POST", f"{self._prefix()}/exec/{exec_id}/start",
-                     body={"Detach": True, "Tty": False})
+    def exec_start(self, exec_id, on_status, cancel, transport):
+        """Start attached exec and return its stream body to the capture worker."""
+        return transport.start(
+            f"{self._prefix()}/exec/{exec_id}/start", on_status, cancel)
 
     def exec_inspect(self, exec_id):
         _, data = self.request("GET", f"{self._prefix()}/exec/{exec_id}/json")
@@ -357,10 +348,22 @@ class GraphifyRefresh:
     and a failed save suppresses the dependent action (NFR-2).
     """
 
-    def __init__(self, client, now=time.time, save=None):
+    def __init__(self, client, now=time.time, save=None,
+                 capture_worker_factory=CaptureWorker,
+                 attached_exec_factory=None):
         self.client = client
         self.now = now
         self.save = save if save is not None else (lambda state: True)
+        self.capture_worker_factory = capture_worker_factory
+        self.attached_exec_factory = (
+            attached_exec_factory or
+            (lambda docker: AttachedExec(
+                docker._netloc, unix_path=docker._unix_path,
+                timeout=docker.request_timeout))
+        )
+        self.capture_worker = None
+        self.capture_exec_id = None
+        self.capture_start_reported = False
 
     # -- entry points used by app.run_once ----------------------------------
 
@@ -429,6 +432,12 @@ class GraphifyRefresh:
         if attempt is not None:
             self._advance(state, attempt, now)
             return
+        worker = self.capture_worker
+        if worker is not None:
+            if worker.is_alive():
+                return
+            self.capture_worker = None
+            self.capture_exec_id = None
         dirty = dirty_repos(state)
         if not dirty:
             return
@@ -493,64 +502,40 @@ class GraphifyRefresh:
         if not self.save(state):
             log("error", PERSIST_FAILURE, not_persisted=True)
             return
-        self._start(state, attempt, now, inspect_on_reject=False)
+        self._start(state, attempt, now)
 
-    def _start(self, state, attempt, now, inspect_on_reject=False):
+    def _start(self, state, attempt, now):
         eid = attempt.get("exec_id")
         if not isinstance(eid, str) or not _ID_RE.match(eid):
             log("error", UNRESOLVED_EXEC, reason="invalid_saved_id")
             return
-        try:
-            self.client.exec_start(eid)
-        except Exception as exc:
-            status = safe_status(getattr(exc, "status", None))
-            log("error", EXEC_START_UNCONFIRMED, status=status,
-                error_type=type(exc).__name__)
-            if status == 409:
-                # Already-run responses are reconciled only by inspecting the
-                # saved ID; if this cycle already inspected it, wait until next.
-                if not inspect_on_reject:
-                    self._inspect_terminal(state, attempt, now)
+        worker = self.capture_worker
+        if worker is not None:
+            if worker.is_alive():
                 return
-            if isinstance(status, int) and 400 <= status < 500:
-                if inspect_on_reject:
-                    self._observed_start_failure(state, attempt, now)
-                else:
-                    self._observe_start_rejection(state, attempt, now)
-                return
-            attempt["phase"] = "started"
-            self.save(state)
-            return
-        attempt["phase"] = "started"
-        if not self.save(state):
-            log("error", PERSIST_FAILURE, not_persisted=True)
+            self.capture_worker = None
+            self.capture_exec_id = None
+        transport = self.attached_exec_factory(self.client)
 
-    def _observe_start_rejection(self, state, attempt, now):
-        try:
-            running, exit_code = self.client.exec_inspect(attempt["exec_id"])
-        except Exception as exc:
-            log("error", EXEC_INSPECT_ERROR, error_type=type(exc).__name__)
-            return
-        if running:
-            return
-        if exit_code is not None:
-            if isinstance(exit_code, int) and exit_code == 0:
-                self._terminal_success(state, attempt, now)
-            else:
-                self._terminal_failure(state, attempt, now, exit_code)
-            return
-        self._observed_start_failure(state, attempt, now)
+        def start(on_status, cancel):
+            return self.client.exec_start(eid, on_status, cancel, transport)
 
-    def _observed_start_failure(self, state, attempt, now):
-        repos = sorted(attempt.get("snapshot", {}))
-        self._set_attempt(state, None)
-        self._record_failure(state, repos, now)
-        if not self.save(state):
-            log("error", PERSIST_FAILURE, not_persisted=True)
+        worker = self.capture_worker_factory(start, cancel_callback=transport.cancel)
+        self.capture_worker = worker
+        self.capture_exec_id = eid
+        self.capture_start_reported = False
+        worker.start()
+
+    def _observe_capture_start(self, worker):
+        if self.capture_start_reported:
             return
-        log("info", RETRY_SCHEDULED,
-            repos=[safe_repo(r) for r in repos],
-            retry_delay=max(retry_delay(failures(state, r)) for r in repos))
+        status, code = worker.status()
+        if status == "rejected":
+            log("error", EXEC_START_UNCONFIRMED, status=code)
+            self.capture_start_reported = True
+        elif status == "transport_error":
+            log("error", EXEC_START_UNCONFIRMED, error_type="unknown")
+            self.capture_start_reported = True
 
     def _advance(self, state, attempt, now):
         """Attempt exists: recover creation or inspect at most once."""
@@ -568,6 +553,9 @@ class GraphifyRefresh:
         if not isinstance(eid, str) or not _ID_RE.match(eid):
             log("error", UNRESOLVED_EXEC, reason="invalid_saved_id")
             return
+        worker = self.capture_worker
+        if worker is not None and self.capture_exec_id == eid:
+            self._observe_capture_start(worker)
         try:
             running, exit_code = self.client.exec_inspect(eid)
         except Exception as exc:
@@ -583,14 +571,29 @@ class GraphifyRefresh:
             log("info", EXEC_RUNNING)
             return
         if exit_code is None:
+            if worker is not None and self.capture_exec_id == eid:
+                status, code = worker.status()
+                if (status == "rejected" and isinstance(code, int)
+                        and 400 <= code < 500 and code != 409):
+                    self._observed_start_failure(state, attempt, now)
+                    return
             gate = self._start_gate(state, attempt, now)
             if now >= gate:
-                self._start(state, attempt, now, inspect_on_reject=True)
+                worker = self.capture_worker
+                if worker is not None and worker.is_alive():
+                    return
+                self._start(state, attempt, now)
             return
+        worker = self.capture_worker
+        diagnostic = "unavailable"
+        if worker is not None and self.capture_exec_id == eid:
+            if exit_code != 0:
+                diagnostic = worker.result() or "unavailable"
+            worker.cancel()
         if isinstance(exit_code, int) and exit_code == 0:
             self._terminal_success(state, attempt, now)
         else:
-            self._terminal_failure(state, attempt, now, exit_code)
+            self._terminal_failure(state, attempt, now, exit_code, diagnostic)
 
     def _terminal_success(self, state, attempt, now):
         snapshot = attempt.get("snapshot", {})
@@ -616,18 +619,33 @@ class GraphifyRefresh:
         # A follow-on for newer dirty targets is started on a later cycle by
         # the top-level scheduler; never more than one exec per tick.
 
-    def _terminal_failure(self, state, attempt, now, exit_code):
+    def _terminal_failure(self, state, attempt, now, exit_code,
+                          diagnostic_class="unavailable"):
         snapshot = attempt.get("snapshot", {})
-        # One workspace exit code cannot identify per-file failures: every
-        # dirty target at failure observation is affected, including targets
-        # that arrived after the snapshot.
         affected = dirty_repos(state) or list(snapshot)
-        self._set_attempt(state, None)
-        self._record_failure(state, affected, now)
+        candidate = deepcopy(state)
+        self._set_attempt(candidate, None)
+        self._record_failure(candidate, affected, now)
+        if not self.save(candidate):
+            log("error", PERSIST_FAILURE, not_persisted=True)
+            return
+        state.clear()
+        state.update(candidate)
         log("error", EXEC_FAILED, exit_code=exit_code,
-            repos=[safe_repo(r) for r in sorted(affected)])
+            repos=[safe_repo(r) for r in sorted(affected)],
+            diagnostic_class=diagnostic_class)
+
+
+    def _observed_start_failure(self, state, attempt, now):
+        repos = sorted(attempt.get("snapshot", {}))
+        self._set_attempt(state, None)
+        self._record_failure(state, repos, now)
         if not self.save(state):
             log("error", PERSIST_FAILURE, not_persisted=True)
+            return
+        log("info", RETRY_SCHEDULED,
+            repos=[safe_repo(repo) for repo in repos],
+            retry_delay=max(retry_delay(failures(state, repo)) for repo in repos))
 
 
 def build_from_env(environ=None, save=None, now=time.time):

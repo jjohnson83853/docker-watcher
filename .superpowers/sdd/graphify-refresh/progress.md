@@ -47,3 +47,10 @@ Implemented in `app.py` and `graphify_refresh.py`; `.env.template` and root `des
 - Fixes (commits `3472295`, `421cd0c`): Dockerfile now `COPY app.py graphify_refresh.py ./`; `main()` degrades to `graphify = None` with a single `graphify_refresh_module_unavailable` warning when the module is absent. Spec update recorded here per bug-fix flow.
 - User rebuilt, pushed, and redeployed: container healthy, `restarts=0`, startup log `repos_found count=39`, no `invalid_config` events; image history confirms the module layer. The Graphify controller is armed (module present, `DOCKER_HOST` parsed).
 - User rule: registry pushes (`registry.localdomain:5000`) are off limits to agents and saved in workspace `AGENTS.md`; the user performs image builds and pushes.
+
+## Observability amendment (2026-09-30)
+
+- User selected sanitized fixed-enum classification from an attached Graphify exec stream. Critic APPROVE and separate user confirmation of requirements, design, and tasks are recorded in `.superpowers/sdd/graphify-refresh-observability/progress.md`.
+- The user explicitly requires preserving `tcp://docker-lxc.localdomain:2375`; the proposed amendment bounds hostname resolution instead of replacing the configured endpoint.
+- The existing `.superpowers/sdd/GATE_OPEN` covers only the original refresh work. The dedicated amendment marker `.superpowers/sdd/graphify-refresh-observability/GATE_OPEN` is open for the approved implementation scope.
+- Implementation completed locally within the approved amendment scope. Full suite: 118 passed, 90.71% source-line coverage; standalone `test_app.py` passed; current local TCP smoke exercised spawned DNS, status-line and field-value validation, complete chunked trailers, and sanitized classification. No live Docker/container operation, image build/push, deployment, restart, or production Graphify update occurred; live acceptance still requires section 5 safeguards.
