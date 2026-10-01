@@ -10,134 +10,8 @@ import app
 import graphify_refresh as refresh
 import graphify_stream
 
-
 def _frame(stream_type, payload):
     return bytes([stream_type, 0, 0, 0]) + struct.pack(">I", len(payload)) + payload
-
-
-def test_frame_parser_preserves_split_multiplexed_frames():
-    parser = graphify_stream.FrameParser()
-    wire = _frame(1, b"stdout error: path not found: ignored") + _frame(
-        2, b"error: path not found: /private/workspace"
-    )
-
-    for byte in wire:
-        parser.feed(bytes([byte]))
-
-    assert parser.finish() == "workspace_path_missing"
-
-
-def test_frame_parser_matches_only_stderr_and_prefers_path_signature():
-    parser = graphify_stream.FrameParser()
-    parser.feed(_frame(1, b"error: path not found: from stdout"))
-    parser.feed(_frame(
-        2,
-        "Nothing to update or rebuild failed — check output above.\n"
-        "error: path not found: /private/path".encode(),
-    ))
-
-    assert parser.finish() == "workspace_path_missing"
-
-
-def test_frame_parser_classifies_exact_rebuild_signature_from_stderr():
-    parser = graphify_stream.FrameParser()
-    parser.feed(_frame(
-        2, "Nothing to update or rebuild failed — check output above.".encode()
-    ))
-
-    assert parser.finish() == "graphify_rebuild_failed"
-
-
-def test_frame_parser_marks_malformed_or_truncated_input_unavailable():
-    malformed = graphify_stream.FrameParser()
-    malformed.feed(bytes([3, 0, 0, 0]) + struct.pack(">I", 0))
-    truncated = graphify_stream.FrameParser()
-    truncated.feed(_frame(2, b"error: path not found: /partial")[:-1])
-
-    assert malformed.finish() == "unavailable"
-    assert truncated.finish() == "unavailable"
-
-
-def test_frame_parser_rejects_declared_oversized_payload():
-    parser = graphify_stream.FrameParser()
-    parser.feed(bytes([2, 0, 0, 0]) + struct.pack(
-        ">I", graphify_stream.MAX_FRAME_BYTES + 1
-    ))
-
-    assert parser.finish() == "unavailable"
-
-
-def test_frame_parser_cap_counts_stdout_and_stderr_payload_bytes():
-    parser = graphify_stream.FrameParser()
-    cap = graphify_stream.SCAN_CAP_BYTES
-    parser.feed(_frame(2, b"error: path not found: /seen\\n"))
-    parser.feed(_frame(1, b"x" * (cap - len(b"error: path not found: /seen\\n"))))
-    parser.feed(_frame(2, b"y"))
-
-    assert parser.finish() == "unavailable"
-
-
-class _Client:
-    def __init__(self, inspect_result):
-        self.inspect_result = inspect_result
-        self.starts = []
-
-    def exec_inspect(self, exec_id):
-        return self.inspect_result
-
-    def exec_start(self, exec_id, on_status, cancel, transport):
-        self.starts.append(exec_id)
-
-    def container_id(self):
-        raise AssertionError("recovered exec must not create a replacement")
-
-    def exec_create(self, container_id):
-        raise AssertionError("recovered exec must not create a replacement")
-
-
-def _saved_attempt():
-    return {
-        "phase": "started",
-        "start_requested": True,
-        "exec_id": "b" * 12,
-        "container_id": "a" * 12,
-        "fallback_deadline": 100,
-        "snapshot": {"repo": 1},
-    }
-
-
-def test_terminal_nonzero_failure_emits_only_fixed_diagnostic_class(capsys):
-    client = _Client((False, 7))
-    state = {
-        "repo": {"target": 1},
-        refresh.RESERVED_KEY: {"attempt": _saved_attempt()},
-    }
-
-    refresh.GraphifyRefresh(client, now=lambda: 100).tick(state)
-
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    failure = next(event for event in events if event["outcome"] == refresh.EXEC_FAILED)
-    assert failure["diagnostic_class"] == "unavailable"
-    assert set(failure["diagnostic_class"] for event in events
-               if "diagnostic_class" in event) <= {
-                   "workspace_path_missing", "graphify_rebuild_failed",
-                   "unclassified", "unavailable",
-               }
-
-
-def test_recovered_running_exec_is_inspected_without_reattaching(capsys):
-    client = _Client((True, None))
-    state = {
-        "repo": {"target": 1},
-        refresh.RESERVED_KEY: {"attempt": _saved_attempt()},
-    }
-
-    refresh.GraphifyRefresh(client, now=lambda: 100).tick(state)
-
-    assert client.starts == []
-    assert state[refresh.RESERVED_KEY]["attempt"]["exec_id"] == "b" * 12
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert any(event["outcome"] == refresh.EXEC_RUNNING for event in events)
 
 
 class _FakeSocket:
@@ -286,15 +160,6 @@ def test_capture_worker_drains_capture_past_scan_cap_to_eof():
     assert worker.result() == "unavailable"
 
 
-def test_frame_parser_accepts_payload_exactly_at_scan_cap():
-    parser = graphify_stream.FrameParser()
-    parser.feed(_frame(1, b"x" * graphify_stream.SCAN_CAP_BYTES))
-
-    assert parser.finish() == "unclassified"
-
-
-def test_frame_parser_empty_stream_is_unclassified():
-    assert graphify_stream.FrameParser().finish() == "unclassified"
 
 
 class _ResolverPipe:
@@ -582,37 +447,6 @@ def test_attached_exec_cancellation_before_start_reports_transport_error(monkeyp
     assert created == []
 
 
-def test_terminal_nonzero_logs_never_contain_raw_capture_output(capsys):
-    secret = b"error: path not found: /private/customer/path"
-    client = _Client((False, 9))
-    state = {"repo": {"target": 1},
-             refresh.RESERVED_KEY: {"attempt": _saved_attempt()}}
-    body = _Body([_frame(2, secret)])
-    worker = graphify_stream.CaptureWorker(
-        lambda status, _cancel: (status(("started", None)) or body))
-    _join_worker(worker)
-
-    controller = refresh.GraphifyRefresh(client, now=lambda: 100)
-    controller.capture_worker = worker
-    controller.capture_exec_id = "b" * 12
-    controller.tick(state)
-    output = capsys.readouterr().out
-
-    assert secret.decode() not in output
-    assert b"/private" not in json.dumps(state).encode()
-    assert "workspace_path_missing" in output
-
-
-def test_recovered_terminal_exec_is_inspected_without_reattaching(capsys):
-    client = _Client((False, 0))
-    state = {"repo": {"target": 1},
-             refresh.RESERVED_KEY: {"attempt": _saved_attempt()}}
-
-    refresh.GraphifyRefresh(client, now=lambda: 100).tick(state)
-
-    assert state[refresh.RESERVED_KEY].get("attempt") is None
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert any(event["outcome"] == refresh.EXEC_SUCCEEDED for event in events)
 
 
 

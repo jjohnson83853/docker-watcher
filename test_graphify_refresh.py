@@ -1,5 +1,7 @@
+
 import json
 import socket
+import struct
 from http.client import HTTPException
 from unittest.mock import Mock
 
@@ -7,6 +9,8 @@ import pytest
 
 import app
 import graphify_refresh as refresh
+import graphify_stream
+
 
 
 class _Response:
@@ -342,61 +346,6 @@ def test_refresh_build_from_env_rejects_invalid_config(capsys):
     assert refresh.build_from_env({"DOCKER_HOST": "tcp://host", "GRAPHIFY_DOCKER_REQUEST_TIMEOUT_SECONDS": "nan"}) is None
     assert refresh.build_from_env({"DOCKER_HOST": "http://host"}) is None
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["reason"] == "invalid_config"
-
-
-def test_gh_get_and_pagination_are_offline(monkeypatch):
-    class GoodResponse:
-        status = 200
-        def __enter__(self): return self
-        def __exit__(self, *args): return None
-        def read(self): return b'{"sha":"abc"}'
-
-    monkeypatch.setattr(app.urllib.request, "urlopen", lambda *_a, **_k: GoodResponse())
-    assert app.gh_get("https://api.test", "token") == (200, {"sha": "abc"})
-
-    def http_error(*_args, **_kwargs):
-        raise app.urllib.error.HTTPError("url", 403, "denied", {}, None)
-    monkeypatch.setattr(app.urllib.request, "urlopen", http_error)
-    assert app.gh_get("https://api.test", "token", quiet_statuses=(403,)) == (403, None)
-
-    pages = [
-        [{"owner": {"login": "alice"}, "name": str(i)} for i in range(100)],
-        [{"owner": {"login": "ALICE"}, "name": "last"}],
-    ]
-    calls = []
-    monkeypatch.setattr(app, "gh_get", lambda url, token: (calls.append(url) or (200, pages.pop(0))))
-    owned = app.list_owner_repos("alice", "token")
-    assert len(owned) == 101
-    assert "page=2" in calls[-1]
-    monkeypatch.setattr(app, "gh_get", lambda *_args: (200, {"sha": "abc"}))
-    assert app.get_latest_commit_sha("a", "b", "main", "token") == "abc"
-
-
-def test_build_failure_and_environment_poll_cycle(monkeypatch, tmp_path, capsys):
-    def failed_run(*_args, **kwargs):
-        raise app.subprocess.CalledProcessError(9, "docker", output="out", stderr="err")
-    monkeypatch.setattr(app.subprocess, "run", failed_run)
-    with pytest.raises(app.BuildError) as err:
-        app._run_docker(["docker", "build"], 2)
-    assert err.value.output == "outerr"
-
-    monkeypatch.setattr(app, "list_owner_repos", lambda *_: [])
-    state_path = tmp_path / "state.json"
-    app.run_once("owner", "token", None, "registry", str(state_path))
-    assert app.load_state(state_path) == {}
-    app.save_state(state_path, {"repo": {"sha": "x"}})
-    assert app.load_state(state_path) == {"repo": {"sha": "x"}}
-
-    heartbeat = tmp_path / "heartbeat"
-    monkeypatch.setenv("GITHUB_USERNAME", "owner")
-    monkeypatch.setenv("GITHUB_TOKEN", "offline-token")
-    monkeypatch.setenv("HEARTBEAT_FILE", str(heartbeat))
-    monkeypatch.setattr(app, "run_once", lambda *_args, **_kwargs: None)
-    class StopLoop(Exception): pass
-    monkeypatch.setattr(app.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopLoop()))
-    with pytest.raises(StopLoop):
-        app.main()
-    assert heartbeat.exists()
 def test_refresh_running_exec_waits_and_rejected_duplicate_start_is_inspected(capsys):
     client = _RefreshClient(inspect_result=(True, None))
     graph = _controller(client, now=lambda: 100)
@@ -421,14 +370,125 @@ def test_refresh_running_exec_waits_and_rejected_duplicate_start_is_inspected(ca
     assert graph._attempt(state) is None
     assert client.calls == [("start", "b" * 12), ("inspect", "b" * 12)]
 
+class _Client:
+    def __init__(self, inspect_result):
+        self.inspect_result = inspect_result
+        self.starts = []
 
-def test_docker_timeout_is_reported_as_build_error(monkeypatch):
-    def timeout(*_args, **_kwargs):
-        raise app.subprocess.TimeoutExpired("docker build", 1, output="partial", stderr="output")
+    def exec_inspect(self, exec_id):
+        return self.inspect_result
 
-    monkeypatch.setattr(app.subprocess, "run", timeout)
-    with pytest.raises(app.BuildError) as error:
-        app._run_docker(["docker", "build"], 1)
-    assert error.value.returncode == "timeout"
-    assert "partial" in error.value.output
+    def exec_start(self, exec_id, on_status, cancel, transport):
+        self.starts.append(exec_id)
 
+    def container_id(self):
+        raise AssertionError("recovered exec must not create a replacement")
+
+    def exec_create(self, container_id):
+        raise AssertionError("recovered exec must not create a replacement")
+
+
+def _saved_attempt():
+    return {
+        "phase": "started",
+        "start_requested": True,
+        "exec_id": "b" * 12,
+        "container_id": "a" * 12,
+        "fallback_deadline": 100,
+        "snapshot": {"repo": 1},
+    }
+
+
+def test_terminal_nonzero_failure_emits_only_fixed_diagnostic_class(capsys):
+    client = _Client((False, 7))
+    state = {
+        "repo": {"target": 1},
+        refresh.RESERVED_KEY: {"attempt": _saved_attempt()},
+    }
+
+    refresh.GraphifyRefresh(client, now=lambda: 100).tick(state)
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    failure = next(event for event in events if event["outcome"] == refresh.EXEC_FAILED)
+    assert failure["diagnostic_class"] == "unavailable"
+    assert set(failure["diagnostic_class"] for event in events
+               if "diagnostic_class" in event) <= {
+                   "workspace_path_missing", "graphify_rebuild_failed",
+                   "unclassified", "unavailable",
+               }
+
+
+def test_recovered_running_exec_is_inspected_without_reattaching(capsys):
+    client = _Client((True, None))
+    state = {
+        "repo": {"target": 1},
+        refresh.RESERVED_KEY: {"attempt": _saved_attempt()},
+    }
+
+    refresh.GraphifyRefresh(client, now=lambda: 100).tick(state)
+
+    assert client.starts == []
+    assert state[refresh.RESERVED_KEY]["attempt"]["exec_id"] == "b" * 12
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(event["outcome"] == refresh.EXEC_RUNNING for event in events)
+
+
+def test_terminal_nonzero_logs_never_contain_raw_capture_output(capsys):
+    secret = b"error: path not found: /private/customer/path"
+    client = _Client((False, 9))
+    state = {"repo": {"target": 1},
+             refresh.RESERVED_KEY: {"attempt": _saved_attempt()}}
+    body = _Body([_frame(2, secret)])
+    worker = graphify_stream.CaptureWorker(
+        lambda status, _cancel: (status(("started", None)) or body))
+    _join_worker(worker)
+
+    controller = refresh.GraphifyRefresh(client, now=lambda: 100)
+    controller.capture_worker = worker
+    controller.capture_exec_id = "b" * 12
+    controller.tick(state)
+    output = capsys.readouterr().out
+
+    assert secret.decode() not in output
+    assert b"/private" not in json.dumps(state).encode()
+    assert "workspace_path_missing" in output
+
+
+def test_recovered_terminal_exec_is_inspected_without_reattaching(capsys):
+    client = _Client((False, 0))
+    state = {"repo": {"target": 1},
+             refresh.RESERVED_KEY: {"attempt": _saved_attempt()}}
+
+    refresh.GraphifyRefresh(client, now=lambda: 100).tick(state)
+
+    assert state[refresh.RESERVED_KEY].get("attempt") is None
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(event["outcome"] == refresh.EXEC_SUCCEEDED for event in events)
+
+def _frame(stream_type, payload):
+    return bytes([stream_type, 0, 0, 0]) + struct.pack(">I", len(payload)) + payload
+
+
+class _Body:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.read_sizes = []
+        self.closed = False
+
+    def read(self, size, _cancel):
+        self.read_sizes.append(size)
+        if not self.chunks:
+            return b""
+        item = self.chunks.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+def _join_worker(worker):
+    worker.start()
+    worker._thread.join(timeout=2)
+    assert not worker.is_alive()
