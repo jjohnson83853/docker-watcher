@@ -1,9 +1,12 @@
 .env
 __pycache__/
 *.pyc
+*.coverage
+htmlcov/
+.coverage
+
 .omc/
 .omp/
 
-# Coverage output
-.coverage
-htmlcov/
+# Go coverage output
+coverage.out

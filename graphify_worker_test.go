@@ -58,3 +58,18 @@ func TestCaptureWorkerRetainsSingleFlightUntilOwnedCaptureExits(t *testing.T) {
 		t.Fatalf("canceled capture result = %q", got)
 	}
 }
+func TestCaptureWorkerCancelAfterCompletionPreservesResult(t *testing.T) {
+	worker := NewCaptureWorker(func(context.Context) (string, error) {
+		return "workspace_path_missing", nil
+	})
+	worker.Start()
+	select {
+	case <-worker.Done():
+	case <-time.After(time.Second):
+		t.Fatal("capture worker did not complete")
+	}
+	worker.Cancel()
+	if got := worker.Result(); got != "workspace_path_missing" {
+		t.Fatalf("completed capture result after cancellation = %q; want workspace_path_missing", got)
+	}
+}

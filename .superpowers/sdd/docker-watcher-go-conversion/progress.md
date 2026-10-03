@@ -1,6 +1,6 @@
 # docker-watcher Go conversion — Progress Ledger
 
-Status: **requirements, design, and tasks confirmed by user; scoped implementation authorization recorded; saved SpecDD critic review ACCEPT.** Implementation remains blocked until gate artifacts are committed and this conversion gate is opened.
+Status: **requirements, design, and tasks confirmed by user; scoped implementation authorization recorded; saved SpecDD critic review ACCEPT; conversion gate open.**
 
 ## Approval ledger
 
@@ -28,10 +28,15 @@ Status: **requirements, design, and tasks confirmed by user; scoped implementati
 
 ## Gate
 
-- The root `.superpowers/sdd/GATE_OPEN` belongs to a different specification and does not open this conversion gate.
-- Conversion gate: **closed pending gate-artifact commit**. Critic ACCEPT, user checkpoint confirmations, scoped implementation instruction, baseline, and local transport feasibility are recorded.
-- After committing the four conversion SpecDD files, update the machine gate marker for this workspace before implementation dispatch. No production operation is authorized.
+- Root `.superpowers/sdd/GATE_OPEN` now records the conversion gate opening after the four SpecDD artifacts were committed.
+- Conversion SpecDD commit: `09f5a1f5185adcaacb456c662234e3d92daa1ed8` (`docs: open docker-watcher Go conversion gate`).
+- TDD RED checkpoint: `027594c89d8216577d3de2ebd7e928da3528f1ac` (`test: preserve Go RED checkpoint`). `go test ./...` failed at compile time on absent production APIs including `Repository`, `ExecInspection`, and `State`; this is intended RED evidence before production code.
+- Conversion implementation gate: **open for the approved offline Go conversion only**. Live Docker/Graphify, image build/push, deployment, registry writes, SSH, and alert provisioning remain unauthorized.
 
 ## Progress
 
-- Implementation has not started. No build, daemon, GitHub, registry, deployment, or production Graphify action has occurred.
+- Phase 1–4 implementation and offline verification are complete. Full suite: `go test -coverprofile=coverage.out -timeout=60s ./...` passed; root package 90.4% statement coverage (cmd/watcher 80.0%). Race suite, `go vet ./...`, `go build ./...`, `gofmt -d *.go cmd/watcher/*.go`, and `docker compose config -q` passed. `go run ./cmd/watcher` with empty required credentials exited 1 with the expected actionable configuration error. No production Docker/GitHub/registry/Graphify endpoints were contacted; no image build/push or deployment occurred.
+- Final specialist reviews: code reviewer approved the state path/durability changes with no findings; Go reviewer reported no actionable findings; security reviewer reported one accepted LOW risk: a pre-existing state file's permissions are not tightened during load (new/replaced files use `0600`). State volume and ancestry must remain operator-controlled/stable; path-based checks do not defend against hostile concurrent local filesystem mutation.
+- Review-driven amendments include exact `json.Number` state preservation, atomic same-directory state replacement and sync barriers across lexical, intermediate symlink-parent, and final resolved ancestry, retry-safe fail-closed loading, absolute cleaned state path for all I/O and leaf-symlink rejection; typed safe Git exit/timeout classification; clone-only PAT cleanup; run-context Graphify cancellation and durable handling of an exec ID returned concurrently; sanitized Graphify persistence-failure events; 8 MiB GitHub/1 MiB Docker response bounds; and capped Graphify repository logs. Stream scan cap drains/discards to EOF or cancellation; no total Graphify command timeout.
+- RED/GREEN evidence: cancellation tests exposed missing `Graphify.ctx` and lost successful `ExecCreate` IDs during cancellation; target-save event tests exposed missing `persist_failure` logs; GitHub tests exposed oversized response and page acceptance before bounds; state tests exposed skipped ancestry retry, relative/symlink path omissions, and I/O mismatch on symlink-plus-`..`; relative/multi-hop symlink tests exposed omitted intermediate parents and leaf-symlink acceptance. Focused regression tests passed after fixes. Full-suite coverage is above the required 90%.
+- The Docker CLI package pin is `29.8.2-r0`; `.env.template` and design artifacts match. Port 2375 is documented as plaintext/unauthenticated and must stay on a trusted isolated network or protected tunnel. Full GitHub pagination remains uncapped to preserve complete enumeration; aggregate repository memory remains the security review's LOW resource-exhaustion risk. Phase 5 remains user-owned.

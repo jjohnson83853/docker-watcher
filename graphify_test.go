@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestGraphifyPersistsIntentBeforeCreateAndOnlyOneInspectPerTick(t *testing.T) {
@@ -17,20 +19,22 @@ func TestGraphifyPersistsIntentBeforeCreateAndOnlyOneInspectPerTick(t *testing.T
 	}, func() int64 { return 100 }, nil)
 	state := State{"repo": map[string]any{"target": int64(1)}}
 	graph.Tick(state)
-	if len(client.calls) == 0 || client.calls[0] != "container" {
-		t.Fatalf("refresh did not start after durable intent: calls=%v", client.calls)
+	calls := client.callSnapshot()
+	if len(calls) == 0 || calls[0] != "container" {
+		t.Fatalf("refresh did not start after durable intent: calls=%v", calls)
 	}
 	if len(snapshots) < 2 || nestedString(snapshots[0], "graphify", "attempt", "phase") != "pre_create" {
 		t.Fatalf("attempt intent was not saved before external create: %#v", snapshots)
 	}
 	client.inspection = ExecInspection{Running: true}
-	before := len(client.calls)
+	before := len(client.callSnapshot())
 	graph.Tick(state)
-	if countString(client.calls[before:], "inspect") != 1 {
-		t.Fatalf("cycle must inspect persisted ID at most once: %v", client.calls[before:])
+	calls = client.callSnapshot()
+	if countString(calls[before:], "inspect") != 1 {
+		t.Fatalf("cycle must inspect persisted ID at most once: %v", calls[before:])
 	}
-	if countString(client.calls[before:], "create") != 0 {
-		t.Fatalf("running attempt was replaced: %v", client.calls[before:])
+	if countString(calls[before:], "create") != 0 {
+		t.Fatalf("running attempt was replaced: %v", calls[before:])
 	}
 }
 
@@ -39,8 +43,8 @@ func TestGraphifyFailedPersistenceSuppressesExternalSideEffect(t *testing.T) {
 	graph := NewGraphify(client, func(State) error { return errors.New("disk path secret") }, func() int64 { return 100 }, nil)
 	state := State{"repo": map[string]any{"target": int64(1)}}
 	graph.Tick(state)
-	if len(client.calls) != 0 {
-		t.Fatalf("Docker call happened without durable intent: %v", client.calls)
+	if calls := client.callSnapshot(); len(calls) != 0 {
+		t.Fatalf("Docker call happened without durable intent: %v", calls)
 	}
 }
 
@@ -51,8 +55,9 @@ func TestGraphifyUninspectableSavedIDBlocksReplacementIndefinitely(t *testing.T)
 	for range 4 {
 		graph.Tick(state)
 	}
-	if countString(client.calls, "create") != 0 || countString(client.calls, "start") != 0 {
-		t.Fatalf("ambiguous saved ID was replayed/replaced: %v", client.calls)
+	calls := client.callSnapshot()
+	if countString(calls, "create") != 0 || countString(calls, "start") != 0 {
+		t.Fatalf("ambiguous saved ID was replayed/replaced: %v", calls)
 	}
 	if nestedString(state, "graphify", "attempt", "exec_id") != "abcdef012345" {
 		t.Fatalf("uninspectable attempt was discarded: %#v", state)
@@ -64,8 +69,9 @@ func TestGraphifyRecoveredExecIsInspectedNeverReattached(t *testing.T) {
 	state := savedAttemptState("abcdef012345")
 	graph := NewGraphify(client, func(State) error { return nil }, func() int64 { return 500 }, nil)
 	graph.Tick(state)
-	if countString(client.calls, "inspect") != 1 || countString(client.calls, "start") != 0 || countString(client.calls, "create") != 0 {
-		t.Fatalf("recovered ID must be inspected only: %v", client.calls)
+	calls := client.callSnapshot()
+	if countString(calls, "inspect") != 1 || countString(calls, "start") != 0 || countString(calls, "create") != 0 {
+		t.Fatalf("recovered ID must be inspected only: %v", calls)
 	}
 	if graphAttempt(state) != nil || nestedInt(state, "repo", "completed") != 1 {
 		t.Fatalf("successful recovered exec did not acknowledge snapshot: %#v", state)
@@ -92,22 +98,29 @@ func TestGraphifyFailurePersistsCappedRetryStateWithoutRawDiagnostics(t *testing
 func TestGraphifySameIDRetryRequiresExpiredPersistedGateAnd409Reconciliation(t *testing.T) {
 	client := &fakeGraphifyClient{inspection: ExecInspection{Running: false}}
 	state := savedAttemptState("abcdef012345")
-	setAttemptValue(state, "fallback_deadline", int64(200))
-	graph := NewGraphify(client, func(State) error { return nil }, func() int64 { return 199 }, nil)
+	graph := NewGraphify(client, func(State) error { return nil }, func() int64 { return 99 }, nil)
 	graph.Tick(state)
-	if countString(client.calls, "start") != 0 {
-		t.Fatalf("exec restarted before persisted retry gate: %v", client.calls)
+	calls := client.callSnapshot()
+	if countString(calls, "start") != 0 {
+		t.Fatalf("exec restarted before persisted retry gate: %v", calls)
 	}
-	graph.now = func() int64 { return 200 }
+	graph.now = func() int64 { return 100 }
 	client.startStatus = 409
 	graph.Tick(state)
-	if countString(client.calls, "start") != 1 || countString(client.calls, "inspect") != 2 || countString(client.calls, "create") != 0 {
-		t.Fatalf("expired retry must start only the saved ID after inspect: %v", client.calls)
+	select {
+	case <-graph.worker.Done():
+	case <-time.After(time.Second):
+		t.Fatal("same-ID start worker did not finish")
+	}
+	calls = client.callSnapshot()
+	if countString(calls, "start") != 1 || countString(calls, "inspect") != 2 || countString(calls, "create") != 0 {
+		t.Fatalf("expired retry must start only the saved ID after inspect: %v", calls)
 	}
 	client.inspection = ExecInspection{Running: true}
 	graph.Tick(state)
-	if countString(client.calls, "inspect") != 3 || countString(client.calls, "start") != 1 || countString(client.calls, "create") != 0 {
-		t.Fatalf("409 was not reconciled by a later inspect of the same ID: %v", client.calls)
+	calls = client.callSnapshot()
+	if countString(calls, "inspect") != 3 || countString(calls, "start") != 1 || countString(calls, "create") != 0 {
+		t.Fatalf("409 was not reconciled by a later inspect of the same ID: %v", calls)
 	}
 	if nestedString(state, "graphify", "attempt", "exec_id") != "abcdef012345" {
 		t.Fatalf("same-ID retry changed persisted ID: %#v", state)
@@ -130,33 +143,50 @@ func TestGraphifyTerminalSaveFailureRetainsAttemptAndDefersCompletion(t *testing
 		t.Fatal("failed terminal persistence released durable attempt")
 	}
 	graph.Tick(state)
-	if countString(client.calls, "create") != 0 || nestedInt(state, "repo", "completed") != 1 {
-		t.Fatalf("terminal retry created a replacement or lost completion: %#v calls=%v", state, client.calls)
+	calls := client.callSnapshot()
+	if countString(calls, "create") != 0 || nestedInt(state, "repo", "completed") != 1 {
+		t.Fatalf("terminal retry created a replacement or lost completion: %#v calls=%v", state, calls)
 	}
 }
 
 type fakeGraphifyClient struct {
-	calls []string
-	inspection ExecInspection
-	inspectErr error
+	mu          sync.Mutex
+	calls       []string
+	inspection  ExecInspection
+	inspectErr  error
 	startStatus int
 }
 
+func (c *fakeGraphifyClient) recordCall(call string) {
+	c.mu.Lock()
+	c.calls = append(c.calls, call)
+	c.mu.Unlock()
+}
+
+func (c *fakeGraphifyClient) callSnapshot() []string {
+	c.mu.Lock()
+	calls := append([]string(nil), c.calls...)
+	c.mu.Unlock()
+	return calls
+}
+
 func (c *fakeGraphifyClient) ContainerID(context.Context) (string, error) {
-	c.calls = append(c.calls, "container")
+	c.recordCall("container")
 	return "container-id", nil
 }
 func (c *fakeGraphifyClient) ExecCreate(context.Context, string, []string, []string) (string, error) {
-	c.calls = append(c.calls, "create")
+	c.recordCall("create")
 	return "abcdef012345", nil
 }
 func (c *fakeGraphifyClient) ExecStart(context.Context, string) error {
-	c.calls = append(c.calls, "start")
-	if c.startStatus == 409 { return &DockerAPIError{StatusCode: 409} }
+	c.recordCall("start")
+	if c.startStatus == 409 {
+		return &DockerAPIError{StatusCode: 409}
+	}
 	return nil
 }
 func (c *fakeGraphifyClient) ExecInspect(context.Context, string) (ExecInspection, error) {
-	c.calls = append(c.calls, "inspect")
+	c.recordCall("inspect")
 	return c.inspection, c.inspectErr
 }
 
@@ -171,12 +201,13 @@ func savedAttemptState(id string) State {
 	}
 }
 
-func graphAttempt(state State) map[string]any { return nestedMap(state, "graphify", "attempt") }
 func nestedMap(root State, keys ...string) map[string]any {
 	var value any = map[string]any(root)
 	for _, key := range keys {
 		parent, ok := value.(map[string]any)
-		if !ok { return nil }
+		if !ok {
+			return nil
+		}
 		value = parent[key]
 	}
 	result, _ := value.(map[string]any)
@@ -184,18 +215,42 @@ func nestedMap(root State, keys ...string) map[string]any {
 }
 func nestedString(root State, keys ...string) string {
 	var value any = map[string]any(root)
-	for _, key := range keys { parent, ok := value.(map[string]any); if !ok { return "" }; value = parent[key] }
+	for _, key := range keys {
+		parent, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		value = parent[key]
+	}
 	result, _ := value.(string)
 	return result
 }
 func nestedInt(root State, keys ...string) int64 {
 	var value any = map[string]any(root)
-	for _, key := range keys { parent, ok := value.(map[string]any); if !ok { return 0 }; value = parent[key] }
-	switch number := value.(type) { case int64: return number; case int: return int64(number); default: return 0 }
+	for _, key := range keys {
+		parent, ok := value.(map[string]any)
+		if !ok {
+			return 0
+		}
+		value = parent[key]
+	}
+	number, _ := numberValue(value)
+	return number
 }
-func setAttemptValue(state State, key string, value any) { attempt := graphAttempt(state); attempt[key] = value }
+func setAttemptValue(state State, key string, value any) {
+	attempt := graphAttempt(state)
+	attempt[key] = value
+}
 func intPtr(value int) *int { return &value }
-func countString(values []string, want string) int { count := 0; for _, value := range values { if value == want { count++ } }; return count }
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
+}
 func cloneState(state State) State {
 	encoded, _ := json.Marshal(state)
 	var clone State

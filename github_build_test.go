@@ -67,6 +67,23 @@ func TestGitHubEmptyRepositorySetIsVisible(t *testing.T) {
 	}
 }
 
+func TestGitHubRepositoryListErrorIsVisibleWithoutLeakingResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "private GitHub response /customer/repo", http.StatusForbidden)
+	}))
+	defer server.Close()
+	var logs strings.Builder
+	client := NewGitHubClient(server.URL, "sentinel-token", server.Client(), &logs)
+	repos, err := client.ListOwnerRepos(context.Background(), "owner")
+	if err != nil || len(repos) != 0 {
+		t.Fatalf("failed list should preserve existing empty-result behavior: repos=%v err=%v", repos, err)
+	}
+	if !strings.Contains(logs.String(), "github_api_error") || !strings.Contains(logs.String(), "403") ||
+		strings.Contains(logs.String(), "private GitHub response") || strings.Contains(logs.String(), "/customer/repo") ||
+		strings.Contains(logs.String(), "sentinel-token") {
+		t.Fatalf("GitHub failure visibility/redaction mismatch: %s", logs.String())
+	}
+}
 func TestGitHubExpectedDockerfile404AndUnexpectedStatuses(t *testing.T) {
 	statuses := map[string]int{"missing": http.StatusNotFound, "denied": http.StatusForbidden, "broken": http.StatusInternalServerError}
 	var requested []string
@@ -126,70 +143,87 @@ func TestGitHubLatestCommitErrorsAndCancellation(t *testing.T) {
 	}
 }
 
-func TestRepositoryChangeDetectionAvoidsUnneededLookups(t *testing.T) {
+func TestProcessRepositorySkipsUnchangedAndBuildsChangedRepository(t *testing.T) {
+	installFakeExecutables(t, `#!/bin/sh
+case "$3" in clone) mkdir -p "$9/.git" ;; esac
+if [ "$1" = rev-parse ]; then printf 'already-built\n'; fi
+`, `#!/bin/sh
+exit 0
+`)
+	statePath := filepath.Join(t.TempDir(), "state.json")
 	state := State{"owner/unchanged": map[string]any{"sha": "same", "pushed_at": "stamp"}}
 	client := &scriptedRepositoryClient{repos: []Repository{
-		{FullName: "owner/unchanged", Owner: RepositoryOwner{Login: "owner"}, DefaultBranch: "main", PushedAt: "stamp"},
-		{FullName: "owner/changed", Owner: RepositoryOwner{Login: "owner"}, DefaultBranch: "trunk", PushedAt: "new"},
-	}}
-	selected, err := DetectChangedRepositories(context.Background(), client, state, "owner", "")
-	if err != nil {
+		{FullName: "owner/unchanged", Owner: RepositoryOwner{Login: "owner"}, Name: "unchanged", CloneURL: "https://github.com/owner/unchanged.git", DefaultBranch: "main", PushedAt: "stamp"},
+		{FullName: "owner/changed", Owner: RepositoryOwner{Login: "owner"}, Name: "changed", CloneURL: "https://github.com/owner/changed.git", DefaultBranch: "trunk", PushedAt: "new"},
+	}, latestSHA: "already-built"}
+	watcher := &Watcher{
+		Config:       Config{GitHubUsername: "owner", GitHubToken: "local-test-token", RegistryURL: "registry.local", BuildTimeoutSeconds: 3},
+		Repositories: client, StatePath: statePath, State: state,
+	}
+	if err := watcher.ProcessRepository(context.Background(), client.repos[0]); err != nil {
 		t.Fatal(err)
 	}
-	if len(selected) != 1 || selected[0].Repository.FullName != "owner/changed" || selected[0].Branch != "trunk" {
-		t.Fatalf("wrong changed repository selection: %+v", selected)
+	if err := watcher.ProcessRepository(context.Background(), client.repos[1]); err != nil {
+		t.Fatal(err)
 	}
-	if client.dockerfileCalls != 1 || client.shaCalls != 1 {
-		t.Fatalf("unchanged repo triggered avoidable requests: Dockerfile=%d SHA=%d", client.dockerfileCalls, client.shaCalls)
+	if client.dockerfileCalls != 1 || client.shaCalls != 1 || len(client.branches) != 2 || client.branches[0] != "trunk" || client.branches[1] != "trunk" {
+		t.Fatalf("unexpected actual repository processing: Dockerfile=%d SHA=%d branches=%v", client.dockerfileCalls, client.shaCalls, client.branches)
+	}
+	if nestedString(watcher.State, "changed", "sha") != "already-built" {
+		t.Fatalf("changed repository SHA was not persisted: %#v", watcher.State)
 	}
 }
 
-func TestRepositoryChangeDetectionHonorsForcedBranchAndSkipsSameSHA(t *testing.T) {
+func TestProcessRepositoryHonorsForcedBranchAndPropagatesLookupErrors(t *testing.T) {
+	wantErr := errors.New("dockerfile lookup unavailable")
 	client := &scriptedRepositoryClient{
-		repos: []Repository{{FullName: "owner/app", Owner: RepositoryOwner{Login: "owner"}, DefaultBranch: "trunk", PushedAt: "new"}},
-		latestSHA: "already-built",
+		repos:         []Repository{{FullName: "owner/app", Owner: RepositoryOwner{Login: "owner"}, Name: "app", DefaultBranch: "trunk", PushedAt: "new"}},
+		dockerfileErr: wantErr,
 	}
-	state := State{"owner/app": map[string]any{"sha": "already-built", "pushed_at": "old"}}
-	selected, err := DetectChangedRepositories(context.Background(), client, state, "owner", "release")
-	if err != nil {
-		t.Fatal(err)
+	watcher := &Watcher{Config: Config{Branch: "release"}, Repositories: client, State: State{"owner/app": map[string]any{"sha": "old", "pushed_at": "old"}}}
+	if err := watcher.ProcessRepository(context.Background(), client.repos[0]); !errors.Is(err, wantErr) {
+		t.Fatalf("ProcessRepository error = %v; want %v", err, wantErr)
 	}
-	if len(selected) != 0 {
-		t.Fatalf("same branch SHA should not trigger another build: %+v", selected)
-	}
-	if len(client.branches) != 2 || client.branches[0] != "release" || client.branches[1] != "release" {
-		t.Fatalf("forced branch was not used for both lookups: %v", client.branches)
+	if client.dockerfileCalls != 1 || client.shaCalls != 0 || len(client.branches) != 1 || client.branches[0] != "release" {
+		t.Fatalf("forced branch or lookup error handling changed: Dockerfile=%d SHA=%d branches=%v", client.dockerfileCalls, client.shaCalls, client.branches)
 	}
 }
 
 type scriptedRepositoryClient struct {
-	repos []Repository
+	repos           []Repository
 	dockerfileCalls int
-	shaCalls int
-	branches []string
-	latestSHA string
+	shaCalls        int
+	branches        []string
+	latestSHA       string
+	dockerfileErr   error
+	shaErr          error
 }
 
-func (c *scriptedRepositoryClient) ListOwnerRepos(context.Context, string) ([]Repository, error) { return c.repos, nil }
+func (c *scriptedRepositoryClient) ListOwnerRepos(context.Context, string) ([]Repository, error) {
+	return c.repos, nil
+}
 func (c *scriptedRepositoryClient) HasDockerfile(_ context.Context, _, _, branch string) (bool, error) {
 	c.dockerfileCalls++
 	c.branches = append(c.branches, branch)
-	return true, nil
+	return true, c.dockerfileErr
 }
 func (c *scriptedRepositoryClient) LatestCommitSHA(_ context.Context, _, _, branch string) (string, error) {
 	c.shaCalls++
 	c.branches = append(c.branches, branch)
-	if c.latestSHA != "" { return c.latestSHA, nil }
+	if c.shaErr != nil {
+		return "", c.shaErr
+	}
+	if c.latestSHA != "" {
+		return c.latestSHA, nil
+	}
 	return "different", nil
 }
 
 func TestBuildPersistsTargetAfterBuildBeforeSequentialPushes(t *testing.T) {
 	installFakeExecutables(t, `#!/bin/sh
 printf '%s\n' "git $*" >> "$EVENTS"
-case "$1" in
-  clone) mkdir -p "$7/.git"; printf 'safe context' > "$7/Dockerfile" ;;
-  rev-parse) printf '%s\n' '0123456789abcdef0123456789abcdef01234567' ;;
-esac
+case "$3" in clone) mkdir -p "$9/.git"; printf 'safe context' > "$9/Dockerfile" ;; esac
+if [ "$1" = rev-parse ]; then printf '%s\n' '0123456789abcdef0123456789abcdef01234567'; fi
 `, `#!/bin/sh
 printf '%s\n' "docker $*" >> "$EVENTS"
 case "$1" in
@@ -213,17 +247,21 @@ esac
 			return fmt.Errorf("target saved before successful build: %w", err)
 		}
 		actions = append(actions, "target-save")
-		return os.WriteFile(targetSaved, []byte(got), 0o600)
+		return SaveState(targetSaved, State{"owner/repo": map[string]any{"target": got}})
 	})
 	if err != nil || sha != "0123456789abcdef0123456789abcdef01234567" {
 		t.Fatalf("BuildAndPush() = %q, %v", sha, err)
+	}
+	savedState, err := LoadState(targetSaved)
+	if err != nil || nestedString(savedState, "owner/repo", "target") != sha {
+		t.Fatalf("actual persisted target unavailable before/after push: state=%#v err=%v", savedState, err)
 	}
 	observed, err := os.ReadFile(events)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(observed)), "\n")
-	if len(lines) != 5 || !strings.HasPrefix(lines[0], "git clone --depth 1 --branch main") || !strings.HasPrefix(lines[1], "git rev-parse HEAD") || !strings.HasPrefix(lines[2], "docker build") || !strings.HasPrefix(lines[3], "docker push") || !strings.HasPrefix(lines[4], "docker push") {
+	if len(lines) != 5 || !strings.HasPrefix(lines[0], "git -c credential.helper=store --file=") || !strings.Contains(lines[0], " clone --depth 1 --branch main") || !strings.HasPrefix(lines[1], "git rev-parse HEAD") || !strings.HasPrefix(lines[2], "docker build") || !strings.HasPrefix(lines[3], "docker push") || !strings.HasPrefix(lines[4], "docker push") {
 		t.Fatalf("unexpected subprocess order: %q", lines)
 	}
 	if len(actions) != 1 {
@@ -236,7 +274,8 @@ esac
 
 func TestBuildTargetSaveFailurePreventsBothPushes(t *testing.T) {
 	installFakeExecutables(t, `#!/bin/sh
-case "$1" in clone) mkdir -p "$7/.git" ;; rev-parse) printf 'abcdef0123456789\n' ;; esac
+case "$3" in clone) mkdir -p "$9/.git" ;; esac
+if [ "$1" = rev-parse ]; then printf 'abcdef0123456789\n'; fi
 `, `#!/bin/sh
 printf '%s\n' "$1" >> "$EVENTS"
 `)
@@ -257,11 +296,20 @@ printf '%s\n' "$1" >> "$EVENTS"
 	}
 }
 
+func TestBuildFailureOutputTailKeepsExactLast4000Characters(t *testing.T) {
+	output := strings.Repeat("x", MaxBuildOutputChars+4) + "TAIL" + strings.Repeat("y", MaxBuildOutputChars-4)
+	failure := RenderBuildFailure(&buildError{code: 7, output: output})
+	want := "TAIL" + strings.Repeat("y", MaxBuildOutputChars-4)
+	if len(failure.OutputTail) != MaxBuildOutputChars || failure.OutputTail != want {
+		t.Fatalf("output tail length/content mismatch: len=%d suffix=%q", len(failure.OutputTail), failure.OutputTail[len(failure.OutputTail)-8:])
+	}
+}
 func TestBuildFailureBoundsDiagnosticAndNeverLeaksCredential(t *testing.T) {
 	installFakeExecutables(t, `#!/bin/sh
-case "$1" in clone) mkdir -p "$7/.git"; printf 'safe context' > "$7/Dockerfile" ;; rev-parse) printf 'abcdef0123456789\n' ;; esac
+case "$3" in clone) mkdir -p "$9/.git"; printf 'safe context' > "$9/Dockerfile" ;; esac
+if [ "$1" = rev-parse ]; then printf 'abcdef0123456789\n'; fi
 `, `#!/bin/sh
-if [ "$1" = build ]; then printf '%05000d' 0 >&2; exit 7; fi
+if [ "$1" = build ]; then printf '%05000d sentinel-pat' 0 >&2; exit 7; fi
 `)
 	_, err := BuildAndPush(context.Background(), BuildRequest{CloneURL: "https://github.com/o/r", Branch: "main", Token: "sentinel-pat", RegistryURL: "reg", Image: "r", Timeout: time.Second}, nil)
 	if err == nil {
@@ -294,15 +342,54 @@ exit 99
 	if strings.Contains(err.Error(), "sentinel-pat") || strings.Contains(err.Error(), "clone failure") {
 		t.Fatalf("clone command or output disclosed in error: %v", err)
 	}
+	if got := RenderBuildFailure(err).ExitCode; got != 9 {
+		t.Fatalf("rendered Git clone exit code = %#v; want 9", got)
+	}
 }
 
+func TestGitRevisionFailureRendersNumericExitCode(t *testing.T) {
+	installFakeExecutables(t, `#!/bin/sh
+case "$3" in clone) mkdir -p "$9/.git" ;; esac
+if [ "$1" = rev-parse ]; then exit 11; fi
+`, `#!/bin/sh
+exit 99
+`)
+	_, err := BuildAndPush(context.Background(), BuildRequest{
+		CloneURL: "https://github.com/o/r", Branch: "main", Token: "pat",
+		RegistryURL: "reg", Image: "r", Timeout: time.Second,
+	}, nil)
+	if err == nil {
+		t.Fatal("fake revision failure was ignored")
+	}
+	if got := RenderBuildFailure(err).ExitCode; got != 11 {
+		t.Fatalf("rendered Git revision exit code = %#v; want 11", got)
+	}
+}
+
+func TestGitCloneTimeoutRendersTimeoutClassification(t *testing.T) {
+	installFakeExecutables(t, `#!/bin/sh
+if [ "$3" = clone ]; then sleep 30; fi
+`, `#!/bin/sh
+exit 99
+`)
+	_, err := BuildAndPush(context.Background(), BuildRequest{
+		CloneURL: "https://github.com/o/r", Branch: "main", Token: "pat",
+		RegistryURL: "reg", Image: "r", Timeout: 100 * time.Millisecond,
+	}, nil)
+	if err == nil {
+		t.Fatal("timed out fake clone was reported as successful")
+	}
+	if got := RenderBuildFailure(err).ExitCode; got != "timeout" {
+		t.Fatalf("rendered Git clone timeout = %#v; want timeout", got)
+	}
+}
 
 func TestLatestPushFailurePreventsShortSHACommit(t *testing.T) {
 	installFakeExecutables(t, `#!/bin/sh
-case "$1" in clone) mkdir -p "$7/.git" ;; rev-parse) printf 'abcdef0123456789\n' ;; esac
+case "$3" in clone) mkdir -p "$9/.git" ;; esac
+if [ "$1" = rev-parse ]; then printf 'abcdef0123456789\n'; fi
 `, `#!/bin/sh
-printf '%s\n' "$*" >> "$EVENTS"
-if [ "$1" = push ]; then exit 8; fi
+if [ "$1" = push ]; then printf '%s\n' "$*" >> "$EVENTS"; exit 8; fi
 `)
 	events := filepath.Join(t.TempDir(), "push-events")
 	t.Setenv("EVENTS", events)
@@ -315,13 +402,23 @@ if [ "$1" = push ]; then exit 8; fi
 		t.Fatal(readErr)
 	}
 	lines := strings.Split(strings.TrimSpace(string(observed)), "\n")
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "push reg/r:latest") {
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "push reg/r:latest") {
+		t.Fatalf("latest push was not the first push action: %q", observed)
+	}
+	var pushes []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "push ") {
+			pushes = append(pushes, line)
+		}
+	}
+	if len(pushes) != 1 {
 		t.Fatalf("short-SHA tag push continued after latest push failed: %q", observed)
 	}
 }
 func TestBuildSubprocessTimeoutStopsFurtherActions(t *testing.T) {
 	installFakeExecutables(t, `#!/bin/sh
-case "$1" in clone) mkdir -p "$7/.git" ;; rev-parse) printf 'abcdef0123456789\n' ;; esac
+case "$3" in clone) mkdir -p "$9/.git" ;; esac
+if [ "$1" = rev-parse ]; then printf 'abcdef0123456789\n'; fi
 `, `#!/bin/sh
 if [ "$1" = build ]; then sleep 2; fi
 `)
@@ -362,8 +459,14 @@ func (p *scriptedRepoProcessor) ProcessRepository(_ context.Context, repo Reposi
 }
 
 func equalStrings(got, want []string) bool {
-	if len(got) != len(want) { return false }
-	for i := range got { if got[i] != want[i] { return false } }
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
 	return true
 }
 

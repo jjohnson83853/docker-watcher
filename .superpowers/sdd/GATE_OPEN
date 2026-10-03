@@ -1,1 +1,3 @@
 Implementation gate opened after Critic APPROVE reviews and separate user confirmations of requirements, design, and tasks for graphify-refresh (2026-10-05). Production Graphify mutation remains gated by the live-acceptance safeguards in the approved tasks.
+
+Docker-watcher Go conversion: implementation gate opened after requirements/design/tasks user confirmations, saved SpecDD Critic ACCEPT, and committed gate artifacts (09f5a1f5185adcaacb456c662234e3d92daa1ed8). User's contextual “continue” authorizes only the approved offline Go conversion. Live Docker/Graphify operations, image build/push, deployment, registry writes, SSH, and Grafana provisioning remain unauthorized.

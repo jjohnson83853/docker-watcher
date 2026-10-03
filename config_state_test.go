@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigPreservesEnvironmentContract(t *testing.T) {
@@ -31,7 +32,7 @@ func TestLoadConfigPreservesEnvironmentContract(t *testing.T) {
 			env:  map[string]string{"GITHUB_USERNAME": "owner", "GITHUB_TOKEN": "token"},
 			check: func(t *testing.T, got Config) {
 				t.Helper()
-				if got.RegistryURL != "registry.localdomain:5000" || got.StateFile != "/data/state.json" || got.PollIntervalSeconds != 300 || got.BuildTimeoutSeconds != 1800 || got.HeartbeatFile != "/data/heartbeat" || got.GraphifyRequestTimeoutSeconds != 10 {
+				if got.RegistryURL != "registry.localdomain:5000" || got.StateFile != "/data/state.json" || got.PollIntervalSeconds != 300 || got.BuildTimeoutSeconds != 1800 || got.HeartbeatFile != "/data/heartbeat" || got.GraphifyRequestTimeout != 10*time.Second {
 					t.Fatalf("unexpected defaults: %+v", got)
 				}
 				if got.Branch != "" || got.DockerHost != "" || got.DockerBuildkit != "0" || got.GraphifyEnabled {
@@ -50,7 +51,7 @@ func TestLoadConfigPreservesEnvironmentContract(t *testing.T) {
 			},
 			check: func(t *testing.T, got Config) {
 				t.Helper()
-				if got.Branch != "" || got.RegistryURL != "registry.internal:5000" || got.StateFile != "/tmp/state.json" || got.PollIntervalSeconds != 17 || got.BuildTimeoutSeconds != 23 || got.HeartbeatFile != "/tmp/beat" || got.DockerHost != "tcp://docker:2375" || got.DockerBuildkit != "0" || got.GraphifyRequestTimeoutSeconds != 9 {
+				if got.Branch != "" || got.RegistryURL != "registry.internal:5000" || got.StateFile != "/tmp/state.json" || got.PollIntervalSeconds != 17 || got.BuildTimeoutSeconds != 23 || got.HeartbeatFile != "/tmp/beat" || got.DockerHost != "tcp://docker:2375" || got.DockerBuildkit != "0" || got.GraphifyRequestTimeout != 9*time.Second {
 					t.Fatalf("explicit environment values lost: %+v", got)
 				}
 			},
@@ -61,6 +62,7 @@ func TestLoadConfigPreservesEnvironmentContract(t *testing.T) {
 			wantErr: true,
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := LoadConfig(tt.env)
@@ -71,6 +73,39 @@ func TestLoadConfigPreservesEnvironmentContract(t *testing.T) {
 				tt.check(t, got)
 			}
 		})
+	}
+}
+
+func TestLoadConfigRejectsInvalidPollAndBuildDurations(t *testing.T) {
+	for _, tc := range []struct {
+		key, value string
+	}{
+		{"POLL_INTERVAL_SECONDS", "-1"},
+		{"BUILD_TIMEOUT_SECONDS", "-1"},
+		{"POLL_INTERVAL_SECONDS", "9223372037"},
+		{"BUILD_TIMEOUT_SECONDS", "9223372037"},
+	} {
+		t.Run(tc.key+"/"+tc.value, func(t *testing.T) {
+			_, err := LoadConfig(map[string]string{
+				"GITHUB_USERNAME": "owner", "GITHUB_TOKEN": "token",
+				tc.key: tc.value,
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("LoadConfig error = %v, want an error naming %s", err, tc.key)
+			}
+		})
+	}
+}
+func TestLoadConfigAcceptsZeroPollAndBuildSeconds(t *testing.T) {
+	config, err := LoadConfig(map[string]string{
+		"GITHUB_USERNAME": "owner", "GITHUB_TOKEN": "token",
+		"POLL_INTERVAL_SECONDS": "0", "BUILD_TIMEOUT_SECONDS": "0",
+	})
+	if err != nil {
+		t.Fatalf("zero intervals were rejected: %v", err)
+	}
+	if config.PollIntervalSeconds != 0 || config.BuildTimeoutSeconds != 0 {
+		t.Fatalf("zero seconds changed during parsing: %+v", config)
 	}
 }
 
@@ -165,7 +200,7 @@ func mustJSON(t *testing.T, value any) []byte {
 }
 
 func TestStateRoundTripPreservesNestedUnknownValues(t *testing.T) {
-	want := State{"repo": map[string]any{"sha": "x", "extension": []any{"unicode-雪", float64(4)}}, "graphify": map[string]any{"attempt": map[string]any{"phase": "pre_start"}}}
+	want := State{"repo": map[string]any{"sha": "x", "extension": []any{"unicode-雪", json.Number("4")}}, "graphify": map[string]any{"attempt": map[string]any{"phase": "pre_start"}}}
 	path := filepath.Join(t.TempDir(), "state.json")
 	if err := SaveState(path, want); err != nil {
 		t.Fatal(err)
@@ -176,5 +211,32 @@ func TestStateRoundTripPreservesNestedUnknownValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("semantic state round-trip mismatch: got %#v want %#v", got, want)
+	}
+}
+
+func TestLoadAndSaveStatePreservesLargeUnknownIntegers(t *testing.T) {
+	const exactInteger = "9007199254740993"
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"extension":{"nested":{"counter":9007199254740993}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension := state["extension"].(map[string]any)
+	nested := extension["nested"].(map[string]any)
+	if got, ok := nested["counter"].(json.Number); !ok || got.String() != exactInteger {
+		t.Fatalf("decoded extension integer = %#v; want exact JSON number %s", nested["counter"], exactInteger)
+	}
+	if err := SaveState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"counter":`+exactInteger) {
+		t.Fatalf("saved extension integer lost precision: %s", data)
 	}
 }
