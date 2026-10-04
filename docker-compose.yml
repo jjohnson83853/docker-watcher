@@ -11,12 +11,8 @@ services:
     volumes:
       - watcher-state:/data
     healthcheck:
-      # Alive means the poll loop is still turning, not that a build
-      # succeeded - main() touches /data/heartbeat every cycle regardless
-      # of outcome. Staleness bound reads the same interval/timeout env
-      # vars the loop itself uses, so a longer BUILD_TIMEOUT_SECONDS
-      # doesn't cause false-unhealthy flaps mid-build.
-      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /data/heartbeat) )) -lt $$(( $${POLL_INTERVAL_SECONDS:-300} + $${BUILD_TIMEOUT_SECONDS:-1800} + 120 ))"]
+      # Go binary applies poll interval + build timeout + 120s without shell/Python.
+      test: ["CMD", "/usr/local/bin/docker-watcher", "healthcheck"]
       interval: 60s
       timeout: 10s
       retries: 3
